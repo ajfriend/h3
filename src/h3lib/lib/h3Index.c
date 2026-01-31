@@ -768,17 +768,115 @@ H3Error H3_EXPORT(compactCells)(const H3Index *h3Set, H3Index *compactedSet,
 // ============================================================================
 
 /**
- * Comparison function for sorting H3 indexes by lower 52 bits.
- * This ordering has a key property: children sort before their parents.
+ * Compare two H3 indexes by lower 52 bits.
+ * Returns true if a < b in lower-52-bit order.
  */
-static int _cmpLow52(const void *a, const void *b) {
-    H3Index ha = *(const H3Index *)a;
-    H3Index hb = *(const H3Index *)b;
-    ha <<= 12;
-    hb <<= 12;
-    if (ha < hb) return -1;
-    if (ha > hb) return +1;
-    return 0;
+static inline bool _ltLow52(H3Index a, H3Index b) {
+    return (a << 12) < (b << 12);
+}
+
+/**
+ * Swap two H3 indexes.
+ */
+static inline void _swapH3(H3Index *a, H3Index *b) {
+    H3Index tmp = *a;
+    *a = *b;
+    *b = tmp;
+}
+
+/**
+ * Insertion sort for small arrays. Used as base case for quicksort.
+ */
+static void _insertionSortLow52(H3Index *arr, int64_t n) {
+    for (int64_t i = 1; i < n; i++) {
+        H3Index key = arr[i];
+        int64_t j = i - 1;
+        while (j >= 0 && _ltLow52(key, arr[j])) {
+            arr[j + 1] = arr[j];
+            j--;
+        }
+        arr[j + 1] = key;
+    }
+}
+
+/**
+ * Quicksort partition using median-of-three pivot selection.
+ */
+static int64_t _partitionLow52(H3Index *arr, int64_t lo, int64_t hi) {
+    // Median-of-three pivot selection
+    int64_t mid = lo + (hi - lo) / 2;
+    if (_ltLow52(arr[mid], arr[lo])) _swapH3(&arr[lo], &arr[mid]);
+    if (_ltLow52(arr[hi], arr[lo])) _swapH3(&arr[lo], &arr[hi]);
+    if (_ltLow52(arr[hi], arr[mid])) _swapH3(&arr[mid], &arr[hi]);
+    // Now arr[mid] is the median, use it as pivot
+    _swapH3(&arr[mid], &arr[hi - 1]);
+    H3Index pivot = arr[hi - 1];
+
+    int64_t i = lo;
+    int64_t j = hi - 1;
+    for (;;) {
+        while (_ltLow52(arr[++i], pivot)) {
+        }
+        while (_ltLow52(pivot, arr[--j])) {
+        }
+        if (i >= j) break;
+        _swapH3(&arr[i], &arr[j]);
+    }
+    _swapH3(&arr[i], &arr[hi - 1]);
+    return i;
+}
+
+/**
+ * Quicksort implementation with insertion sort for small subarrays.
+ * Inline comparison avoids function pointer overhead of qsort.
+ */
+static void _quicksortLow52(H3Index *arr, int64_t lo, int64_t hi) {
+    // Use insertion sort for small subarrays
+    if (hi - lo < 16) {
+        _insertionSortLow52(arr + lo, hi - lo + 1);
+        return;
+    }
+
+    int64_t p = _partitionLow52(arr, lo, hi);
+    _quicksortLow52(arr, lo, p - 1);
+    _quicksortLow52(arr, p + 1, hi);
+}
+
+/**
+ * Sort H3 indexes by lower 52 bits.
+ * Uses quicksort with inline comparison for better performance than qsort.
+ */
+static void _sortLow52(H3Index *arr, int64_t n) {
+    if (n <= 1) return;
+    if (n < 16) {
+        _insertionSortLow52(arr, n);
+        return;
+    }
+    _quicksortLow52(arr, 0, n - 1);
+}
+
+/**
+ * Fast inline parent computation via bit manipulation.
+ * Equivalent to cellToParent but avoids function call overhead and loops.
+ */
+static inline H3Index _fastParent(H3Index h, int parentRes) {
+    // Set resolution to parentRes
+    H3Index parent =
+        (h & H3_RES_MASK_NEGATIVE) | ((uint64_t)parentRes << H3_RES_OFFSET);
+    // Set all digits from parentRes+1 to 15 to 0x7 (unused digit marker)
+    int numBits = (MAX_H3_RES - parentRes) * H3_PER_DIGIT_OFFSET;
+    uint64_t mask = (1ULL << numBits) - 1;
+    return parent | mask;
+}
+
+/**
+ * Fast check if cell is a descendant of ancestor.
+ * Returns true if cell's parent at ancestor's resolution equals ancestor.
+ */
+static inline bool _isDescendant(H3Index cell, int cellRes, H3Index ancestor,
+                                 int ancestorRes) {
+    if (cellRes <= ancestorRes) return false;
+    return _fastParent(cell, ancestorRes) == ancestor;
 }
 
 /**
@@ -788,39 +886,47 @@ static int _cmpLow52(const void *a, const void *b) {
  *  -1 if a is a proper descendant of b
  *  +1 if unrelated (neither is an ancestor of the other)
  */
-static int _cmpCanon(H3Index a, H3Index b) {
+static inline int _cmpCanon(H3Index a, int resA, H3Index b, int resB) {
     if (a == b) return 0;
+    if (_isDescendant(a, resA, b, resB)) return -1;
+    return +1;
+}
 
-    int resA = H3_GET_RESOLUTION(a);
-    int resB = H3_GET_RESOLUTION(b);
+/**
+ * Fast inline pentagon check.
+ * A cell is a pentagon if its base cell is a pentagon and all resolution
+ * digits are 0 (center children).
+ */
+static inline bool _isPentagonFast(H3Index h, int res) {
+    // Check if base cell is a pentagon
+    if (!_isBaseCellPentagon(H3_GET_BASE_CELL(h))) return false;
 
-    // Check if a is a descendant of b
-    if (resA > resB) {
-        H3Index parent;
-        if (H3_EXPORT(cellToParent)(a, resB, &parent) == E_SUCCESS) {
-            if (parent == b) return -1;  // a is descendant of b
-        }
-    }
+    // Check if all digits from 1 to res are 0
+    // For res 0, this is vacuously true
+    if (res == 0) return true;
 
-    return +1;  // unrelated
+    // Digits 1 to res occupy bits (15-res)*3 to 44
+    int lowBit = (MAX_H3_RES - res) * H3_PER_DIGIT_OFFSET;
+    int numBits = (res * H3_PER_DIGIT_OFFSET);
+    uint64_t mask = ((1ULL << numBits) - 1) << lowBit;
+
+    return (h & mask) == 0;
 }
 
 /**
  * Returns the sequent cell: the sibling with the next digit after the input.
  * For pentagon parents, skips digit 1 (children have digits 0, 2, 3, 4, 5, 6).
+ * Takes pre-computed resolution to avoid redundant calls.
  */
-static H3Index _sequent(H3Index cell) {
-    int res = H3_GET_RESOLUTION(cell);
+static inline H3Index _sequent(H3Index cell, int res) {
     int digit = H3_GET_INDEX_DIGIT(cell, res);
     int nextDigit = digit + 1;
 
-    // Pentagon cells skip digit 1
+    // Pentagon cells skip digit 1 - only check if needed
     if (nextDigit == 1) {
-        H3Index parent;
-        if (H3_EXPORT(cellToParent)(cell, res - 1, &parent) == E_SUCCESS) {
-            if (H3_EXPORT(isPentagon)(parent)) {
-                nextDigit = 2;
-            }
+        H3Index parent = _fastParent(cell, res - 1);
+        if (_isPentagonFast(parent, res - 1)) {
+            nextDigit = 2;
         }
     }
 
@@ -830,29 +936,27 @@ static H3Index _sequent(H3Index cell) {
 }
 
 /**
- * Returns true if cell has res >= 1 and its resolution digit is 0.
- * Such cells could potentially start a compactable sibling set.
- */
-static bool _isFirstChild(H3Index cell) {
-    int res = H3_GET_RESOLUTION(cell);
-    if (res < 1) return false;
-    return H3_GET_INDEX_DIGIT(cell, res) == 0;
-}
-
-/**
  * Returns true if cur is a first descendant of seq:
  * - cur is a proper descendant of seq (finer resolution, same ancestor path)
  * - all digits between seq's res and cur's res are 0
+ * Uses bit masking instead of per-digit loop for efficiency.
  */
-static bool _isFirstDescendantOf(H3Index cur, H3Index seq) {
-    if (_cmpCanon(cur, seq) != -1) return false;
+static inline bool _isFirstDescendantOf(H3Index cur, int curRes, H3Index seq,
+                                        int seqRes) {
+    if (curRes <= seqRes) return false;
 
-    int seqRes = H3_GET_RESOLUTION(seq);
-    int curRes = H3_GET_RESOLUTION(cur);
-    for (int r = seqRes + 1; r <= curRes; r++) {
-        if (H3_GET_INDEX_DIGIT(cur, r) != 0) return false;
-    }
-    return true;
+    // Check if cur is a descendant of seq
+    if (_fastParent(cur, seqRes) != seq) return false;
+
+    // Check if all digits from seqRes+1 to curRes are 0
+    // Digit at res r occupies bits [(15-r)*3, (15-r)*3+2]
+    // We need to check digits from seqRes+1 to curRes
+    int lowBit = (MAX_H3_RES - curRes) * H3_PER_DIGIT_OFFSET;
+    int highBit = (MAX_H3_RES - seqRes - 1) * H3_PER_DIGIT_OFFSET + 2;
+    int numBits = highBit - lowBit + 1;
+    uint64_t mask = ((1ULL << numBits) - 1) << lowBit;
+
+    return (cur & mask) == 0;
 }
 
 /**
@@ -863,21 +967,27 @@ static bool _isFirstDescendantOf(H3Index cur, H3Index seq) {
  */
 static void _removeDescendants(H3Index *cells, int64_t n) {
     H3Index parent = H3_NULL;
+    int parentRes = 0;
 
     for (int64_t i = n - 1; i >= 0; i--) {
         if (cells[i] == H3_NULL) {
             continue;
         }
 
+        H3Index cell = cells[i];
+        int cellRes = H3_GET_RESOLUTION(cell);
+
         if (parent == H3_NULL) {
-            parent = cells[i];
+            parent = cell;
+            parentRes = cellRes;
         } else {
-            int cmp = _cmpCanon(cells[i], parent);
+            int cmp = _cmpCanon(cell, cellRes, parent, parentRes);
             if (cmp == 0 || cmp == -1) {
                 // cells[i] equals or is a descendant of parent
                 cells[i] = H3_NULL;
             } else {
-                parent = cells[i];
+                parent = cell;
+                parentRes = cellRes;
             }
         }
     }
@@ -893,6 +1003,10 @@ static int64_t _compactSinglePass(H3Index *cells, int64_t n) {
     int64_t j = 0;  // pending pointer (end of pending region)
     int64_t k = 0;  // process pointer
 
+    // Track the last pending cell and its resolution for efficiency
+    H3Index lastPending = H3_NULL;
+    int lastPendingRes = 0;
+
     // Invariants:
     // - 0 <= i <= j <= k <= n
     // - cells[0..i) are done (fully compacted)
@@ -906,12 +1020,16 @@ static int64_t _compactSinglePass(H3Index *cells, int64_t n) {
         }
 
         H3Index cur = cells[k];
+        int curRes = H3_GET_RESOLUTION(cur);
 
         // Empty stack: cur either starts a new pending set or goes to done
         if (i == j) {
             cells[j] = cur;
             j++;
-            if (!_isFirstChild(cur)) {
+            lastPending = cur;
+            lastPendingRes = curRes;
+            // Check if first child: res >= 1 and res digit is 0
+            if (curRes < 1 || H3_GET_INDEX_DIGIT(cur, curRes) != 0) {
                 i = j;  // Can't compact, move to done
             }
             k++;
@@ -919,32 +1037,40 @@ static int64_t _compactSinglePass(H3Index *cells, int64_t n) {
         }
 
         // Non-empty stack: check if cur continues or completes the set
-        H3Index seq = _sequent(cells[j - 1]);
+        H3Index seq = _sequent(lastPending, lastPendingRes);
 
         if (cur == seq) {
             // Continues or completes the set — add to stack
             cells[j] = cur;
             j++;
+            lastPending = cur;
+            lastPendingRes = curRes;
 
-            int res = H3_GET_RESOLUTION(cur);
-            int digit = H3_GET_INDEX_DIGIT(cur, res);
+            int digit = H3_GET_INDEX_DIGIT(cur, curRes);
             if (digit == 6) {
                 // Completes the set — compact
-                H3Index parent;
-                H3_EXPORT(cellToParent)(cur, res - 1, &parent);
-                int numChildren = H3_EXPORT(isPentagon)(parent) ? 6 : 7;
+                int parentRes = curRes - 1;
+                H3Index parent = _fastParent(cur, parentRes);
+                int numChildren = _isPentagonFast(parent, parentRes) ? 6 : 7;
                 j -= numChildren;
                 cells[k] = parent;
+                // Update lastPending for the new stack top
+                if (j > i) {
+                    lastPending = cells[j - 1];
+                    lastPendingRes = H3_GET_RESOLUTION(lastPending);
+                }
                 continue;  // Process parent next
             }
             k++;
             continue;
         }
 
-        if (_isFirstDescendantOf(cur, seq)) {
+        if (_isFirstDescendantOf(cur, curRes, seq, lastPendingRes)) {
             // First descendant of sequent — add to stack
             cells[j] = cur;
             j++;
+            lastPending = cur;
+            lastPendingRes = curRes;
             k++;
             continue;
         }
@@ -976,7 +1102,7 @@ H3Error H3_EXPORT(compactCellsInPlace)(H3Index *h3Set, int64_t *numHexes) {
     }
 
     // Phase 1: Sort by lower 52 bits
-    qsort(h3Set, n, sizeof(H3Index), _cmpLow52);
+    _sortLow52(h3Set, n);
 
     // Phase 2: Canonicalize (remove duplicates and descendants)
     _removeDescendants(h3Set, n);
