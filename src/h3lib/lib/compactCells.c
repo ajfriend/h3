@@ -67,7 +67,7 @@ static bool is_descendant(H3Index child, H3Index parent) {
 }
 
 /** The next sibling (cell with next digit). Skips digit 1 for pentagons. */
-static H3Index sequent(H3Index cell) {
+static H3Index next_sibling(H3Index cell) {
     int r = H3_GET_RESOLUTION(cell);
     int next = H3_GET_INDEX_DIGIT(cell, r) + 1;
 
@@ -162,43 +162,38 @@ static int64_t compact_single_pass(H3Index *cells, int64_t n) {
             continue;
         }
 
-        // If pending is empty
-        if (i == j) {
-            cells[j++] = cur;  // add it to pending
-
-            // If it is a first child, then we leave it in pending, otherwise
-            // we flush the pending stack.
-            if (!is_first_child(cur)) i = j;
-            k++;
-            continue;
-        }
-
-        // If here, the pending stack is nonempty.
-        // Check if `cur` continues the pending set.
-        H3Index seq = sequent(cells[j - 1]);
-
-        if (cur == seq) {
-            cells[j++] = cur;
-            if (is_last_child(cur)) {
-                // Complete set — replace with parent
-                H3Index p = parent(cur);
-                j -= num_children(p);  // Clear these children from pending.
-                cells[k] = p;          // Put parent as next "to process".
-            } else {
+        // Try to extend pending set
+        if (i < j) {
+            H3Index sib = next_sibling(cells[j - 1]);
+            if (cur == sib) {
+                cells[j++] = cur;  // Add to pending.
+                if (is_last_child(cur)) {
+                    // Compact siblings, replace with parent
+                    H3Index p = parent(cur);
+                    cells[k] = p;          // Put parent as next "to process".
+                    j -= num_children(p);  // Clear these children from pending.
+                } else {
+                    // Middle sibling, move along.
+                    k++;
+                }
+                continue;
+            } else if (is_first_descendant_of(cur, sib)) {
+                cells[j++] = cur;  // Add to pending.
                 k++;
+                continue;
+            } else {
+                // `cur` is not the next sibling or descendent of.
+                i = j;  // Flush the pending stack.
+                // Conisder `cur` below.
             }
-            continue;
         }
 
-        if (is_first_descendant_of(cur, seq)) {
-            cells[j++] = cur;
-            k++;
-            continue;
-        }
-
-        // Unrelated: flush pending and reconsider `cur` in next iteration
-        // with "first child" logic.
-        i = j;
+        // If here, pending stack is empty.
+        // Start new potential sibling set.
+        cells[j++] = cur;
+        // If not a first child, flush immediately.
+        if (!is_first_child(cur)) i = j;
+        k++;
     }
 
     return j;

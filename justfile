@@ -26,7 +26,7 @@ test-one TEST: build
     ./build/bin/{{TEST}}
 
 test-compact: build
-    ./build/bin/testCompactCells
+    @./build/bin/testCompactCells > /dev/null && echo "testCompactCells: PASS" || echo "testCompactCells: FAIL"
 
 bench: build
     ./build/bin/benchmarkCompactAlgos
