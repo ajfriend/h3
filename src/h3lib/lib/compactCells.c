@@ -184,7 +184,7 @@ static int64_t compact_single_pass(H3Index *cells, int64_t n) {
             } else {
                 // `cur` is not the next sibling or descendent of.
                 i = j;  // Flush the pending stack.
-                // Conisder `cur` below.
+                // Consider `cur` below.
             }
         }
 
