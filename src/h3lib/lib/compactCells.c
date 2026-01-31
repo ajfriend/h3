@@ -17,10 +17,6 @@
  * @file compactCells.c
  * @brief In-place cell compaction algorithm.
  *
- * This file implements an in-place compaction algorithm that operates
- * directly on the input array, requiring only O(1) additional memory
- * beyond what the sort uses.
- *
  * The algorithm has three phases:
  * 1. Sort by lower 52 bits (groups siblings, children before parents)
  * 2. Canonicalize (remove duplicates and descendants)
@@ -32,129 +28,89 @@
 #include "sortH3.h"
 
 // ============================================================================
-// Helper functions (optimized for clarity, not speed)
+// Helpers
 // ============================================================================
 
-/**
- * Check if `cell` is a descendant of `ancestor`.
- * A cell is a descendant if its parent at the ancestor's resolution
- * equals the ancestor.
- */
-static bool isDescendantOf(H3Index cell, H3Index ancestor) {
-    int cellRes = H3_GET_RESOLUTION(cell);
-    int ancestorRes = H3_GET_RESOLUTION(ancestor);
+/** Get parent at a specific resolution (returns the cell, not an error). */
+static H3Index getParent(H3Index cell, int parentRes) {
+    H3Index out;
+    H3_EXPORT(cellToParent)(cell, parentRes, &out);
+    return out;
+}
 
-    if (cellRes <= ancestorRes) {
-        return false;
-    }
-
-    H3Index cellParent;
-    H3_EXPORT(cellToParent)(cell, ancestorRes, &cellParent);
-    return cellParent == ancestor;
+/** Return cell with digit at resolution r changed to d. */
+static H3Index withDigit(H3Index cell, int r, int d) {
+    H3_SET_INDEX_DIGIT(cell, r, d);
+    return cell;
 }
 
 /**
- * Compare two cells for the canonicalization phase.
- * Returns:
- *   0 if a == b (same cell)
+ * Rich comparison for ancestor/descendant relationship.
+ *   0 if a == b
  *  -1 if a is a descendant of b
  *  +1 if unrelated
  */
-static int compareForCanon(H3Index a, H3Index b) {
+static int cmp_canon(H3Index a, H3Index b) {
     if (a == b) return 0;
-    if (isDescendantOf(a, b)) return -1;
+
+    int resA = H3_GET_RESOLUTION(a);
+    int resB = H3_GET_RESOLUTION(b);
+
+    if (resA > resB && getParent(a, resB) == b) return -1;
+
     return +1;
 }
 
-/**
- * Returns the "sequent" cell: the next sibling after `cell`.
- *
- * For a cell with digit d at its resolution, the sequent has digit d+1.
- * Pentagon parents skip digit 1, so their children have digits 0,2,3,4,5,6.
- */
-static H3Index nextSibling(H3Index cell) {
-    int res = H3_GET_RESOLUTION(cell);
-    int digit = H3_GET_INDEX_DIGIT(cell, res);
-    int nextDigit = digit + 1;
-
-    // Pentagon parents skip digit 1
-    if (nextDigit == 1) {
-        H3Index parent;
-        H3_EXPORT(cellToParent)(cell, res - 1, &parent);
-        if (H3_EXPORT(isPentagon)(parent)) {
-            nextDigit = 2;
-        }
-    }
-
-    H3Index result = cell;
-    H3_SET_INDEX_DIGIT(result, res, nextDigit);
-    return result;
+static bool is_descendant(H3Index child, H3Index parent) {
+    int cmp = cmp_canon(child, parent);
+    return cmp == 0 || cmp == -1;
 }
 
-/**
- * Check if `cell` is the "first descendant" of `target`.
- *
- * A first descendant is a cell that:
- * 1. Is a proper descendant of target (finer resolution, same ancestor path)
- * 2. Has all zeros in the digits between target's resolution and its own
- *
- * This matters because first descendants sort immediately after their
- * ancestor in the lower-52-bit ordering, so they can "fill in" for a
- * missing sibling that will be created by compacting the descendants.
- */
-static bool isFirstDescendantOf(H3Index cell, H3Index target) {
-    int cellRes = H3_GET_RESOLUTION(cell);
-    int targetRes = H3_GET_RESOLUTION(target);
+/** The next sibling (cell with next digit). Skips digit 1 for pentagons. */
+static H3Index sequent(H3Index cell) {
+    int r = H3_GET_RESOLUTION(cell);
+    int next = H3_GET_INDEX_DIGIT(cell, r) + 1;
 
-    if (cellRes <= targetRes) {
-        return false;
+    if (next == 1 && H3_EXPORT(isPentagon)(getParent(cell, r - 1))) {
+        next = 2;
     }
 
-    // Check that cell is a descendant of target
-    H3Index cellParent;
-    H3_EXPORT(cellToParent)(cell, targetRes, &cellParent);
-    if (cellParent != target) {
-        return false;
-    }
-
-    // Check that all digits from targetRes+1 to cellRes are 0
-    for (int r = targetRes + 1; r <= cellRes; r++) {
-        if (H3_GET_INDEX_DIGIT(cell, r) != 0) {
-            return false;
-        }
-    }
-
-    return true;
+    return withDigit(cell, r, next);
 }
 
-/**
- * Check if a cell can potentially start a compactable sibling set.
- *
- * A cell can start a set if:
- * 1. It has resolution >= 1 (res 0 cells have no parent)
- * 2. Its digit at its resolution is 0 (it's the first sibling)
- */
-static bool canStartSiblingSet(H3Index cell) {
-    int res = H3_GET_RESOLUTION(cell);
-    if (res < 1) {
-        return false;
-    }
-    return H3_GET_INDEX_DIGIT(cell, res) == 0;
+/** Can this cell start a compactable sibling set? (res >= 1, digit 0) */
+static bool is_first_child(H3Index cell) {
+    int r = H3_GET_RESOLUTION(cell);
+    return r >= 1 && H3_GET_INDEX_DIGIT(cell, r) == 0;
 }
 
-/**
- * Check if a cell is the last sibling (digit 6) and thus completes a set.
- */
-static bool completesSet(H3Index cell) {
-    int res = H3_GET_RESOLUTION(cell);
-    return H3_GET_INDEX_DIGIT(cell, res) == 6;
+/** Is this cell the last sibling? (digit 6) */
+static bool is_last_child(H3Index cell) {
+    int r = H3_GET_RESOLUTION(cell);
+    return H3_GET_INDEX_DIGIT(cell, r) == 6;
 }
 
-/**
- * Get the number of children for a cell (6 for pentagons, 7 for hexagons).
- */
-static int numChildren(H3Index cell) {
+/** Get immediate parent (one resolution coarser). */
+static H3Index parent(H3Index cell) {
+    return getParent(cell, H3_GET_RESOLUTION(cell) - 1);
+}
+
+/** Number of children (6 for pentagons, 7 for hexagons). */
+static int num_children(H3Index cell) {
     return H3_EXPORT(isPentagon)(cell) ? 6 : 7;
+}
+
+/** Is cur the first descendant of target? (descendant with all-zero path) */
+static bool is_first_descendant_of(H3Index cur, H3Index target) {
+    if (cmp_canon(cur, target) != -1) return false;
+
+    int targetRes = H3_GET_RESOLUTION(target);
+    int curRes = H3_GET_RESOLUTION(cur);
+
+    for (int r = targetRes + 1; r <= curRes; r++) {
+        if (H3_GET_INDEX_DIGIT(cur, r) != 0) return false;
+    }
+    return true;
 }
 
 // ============================================================================
@@ -162,36 +118,21 @@ static int numChildren(H3Index cell) {
 // ============================================================================
 
 /**
- * Remove duplicates and descendants from a sorted array.
- *
- * After sorting by lower 52 bits, parents sort AFTER their children.
- * By walking right-to-left, we encounter parents first. Any children
- * we encounter later can be safely removed since their parent already
- * represents the same area.
+ * Remove duplicates and descendants.
+ * Walking right-to-left, parents come first; remove any children we see.
  */
-static void removeDescendants(H3Index *cells, int64_t n) {
-    H3Index currentParent = H3_NULL;
+static void remove_descendants(H3Index *cells, int64_t n) {
+    H3Index ancestor = H3_NULL;
 
     for (int64_t i = n - 1; i >= 0; i--) {
-        H3Index cell = cells[i];
+        if (cells[i] == H3_NULL) continue;
 
-        if (cell == H3_NULL) {
-            continue;
-        }
-
-        if (currentParent == H3_NULL) {
-            // First non-null cell becomes the current parent
-            currentParent = cell;
+        if (ancestor == H3_NULL) {
+            ancestor = cells[i];
+        } else if (is_descendant(cells[i], ancestor)) {
+            cells[i] = H3_NULL;
         } else {
-            int cmp = compareForCanon(cell, currentParent);
-            if (cmp == 0 || cmp == -1) {
-                // Cell is equal to or a descendant of currentParent
-                // Remove it since the parent already covers this area
-                cells[i] = H3_NULL;
-            } else {
-                // Cell is unrelated to currentParent; it becomes the new parent
-                currentParent = cell;
-            }
+            ancestor = cells[i];
         }
     }
 }
@@ -203,124 +144,78 @@ static void removeDescendants(H3Index *cells, int64_t n) {
 /**
  * Single-pass compaction.
  *
- * We scan through the sorted cells, looking for complete sets of siblings
- * (7 cells for hexagons, 6 for pentagons) that can be replaced by their parent.
- *
- * The algorithm uses three regions in the array:
- *
- *   | done... | pending... |  junk  | to process... |
- *             ^            ^        ^
- *             i            j        k
- *
- * - cells[0..i)   = "done" - fully compacted, won't change
- * - cells[i..j)   = "pending" - might form a complete set with future cells
- * - cells[j..k)   = junk - can be overwritten
- * - cells[k..n)   = not yet processed
- *
- * Returns the count of compacted cells (stored at positions 0 to j-1).
+ * | done... | pending... |  junk  | to process... |
+ *           ^            ^        ^
+ *           i            j        k
  */
-static int64_t compactSinglePass(H3Index *cells, int64_t n) {
-    int64_t i = 0;  // End of "done" region
-    int64_t j = 0;  // End of "pending" region
-    int64_t k = 0;  // Current cell being processed
+static int64_t compact_single_pass(H3Index *cells, int64_t n) {
+    int64_t i = 0;  // end of "done"
+    int64_t j = 0;  // end of "pending"
+    int64_t k = 0;  // next to process
 
     while (k < n) {
         H3Index cur = cells[k];
 
-        // Skip null cells
+        // Skip over 0 (H3_NULL) values
         if (cur == H3_NULL) {
             k++;
             continue;
         }
 
-        // Case 1: No pending cells
+        // If pending is empty
         if (i == j) {
-            // Add current cell to pending
-            cells[j++] = cur;
+            cells[j++] = cur;  // add it to pending
 
-            // If this cell can't start a sibling set, move it to done
-            if (!canStartSiblingSet(cur)) {
-                i = j;
+            // If it is a first child, then we leave it in pending, otherwise
+            // we flush the pending stack.
+            if (!is_first_child(cur)) i = j;
+            k++;
+            continue;
+        }
+
+        // If here, the pending stack is nonempty.
+        // Check if `cur` continues the pending set.
+        H3Index seq = sequent(cells[j - 1]);
+
+        if (cur == seq) {
+            cells[j++] = cur;
+            if (is_last_child(cur)) {
+                // Complete set — replace with parent
+                H3Index p = parent(cur);
+                j -= num_children(p);  // Clear these children from pending.
+                cells[k] = p;          // Put parent as next "to process".
+            } else {
+                k++;
             }
-            k++;
             continue;
         }
 
-        // Case 2: We have pending cells - check if cur continues the set
-        H3Index top = cells[j - 1];
-        H3Index expected = nextSibling(top);
-
-        if (cur == expected) {
-            // Current cell is the next sibling - add to pending
-            cells[j++] = cur;
-
-            // Check if this completes a sibling set
-            if (completesSet(cur)) {
-                // Compact: replace the siblings with their parent
-                H3Index parent;
-                int parentRes = H3_GET_RESOLUTION(cur) - 1;
-                H3_EXPORT(cellToParent)(cur, parentRes, &parent);
-
-                // Remove the children from pending
-                j -= numChildren(parent);
-
-                // Put the parent back at position k to be processed next
-                // (it might complete another set at a coarser resolution)
-                cells[k] = parent;
-                continue;  // Don't increment k - process the parent
-            }
-            k++;
-            continue;
-        }
-
-        if (isFirstDescendantOf(cur, expected)) {
-            // Current cell is a first descendant of the expected sibling.
-            // Add it to pending - it might compact up to produce the
-            // sibling we're waiting for.
+        if (is_first_descendant_of(cur, seq)) {
             cells[j++] = cur;
             k++;
             continue;
         }
 
-        // Current cell doesn't continue the set - flush pending to done
+        // Unrelated: flush pending and reconsider `cur` in next iteration
+        // with "first child" logic.
         i = j;
-        // Don't increment k - reconsider this cell with empty pending
     }
 
-    return j;  // Compacted cells are at positions 0 to j-1
+    return j;
 }
 
 // ============================================================================
 // Public API
 // ============================================================================
 
-/**
- * compactCellsInPlace compresses a set of cells in-place by pruning full
- * child branches to the parent level. The input array is modified directly,
- * with compacted cells placed at the front and the new count returned.
- *
- * The cells are sorted by lower 52 bits as a side effect. This ordering
- * places children before parents and groups siblings together.
- *
- * @param h3Set     Set of cells (modified in place)
- * @param numHexes  Input: size of the array. Output: number of compacted cells
- * @return          An error code on failure
- */
 H3Error H3_EXPORT(compactCellsInPlace)(H3Index *h3Set, int64_t *numHexes) {
     int64_t n = *numHexes;
 
-    if (n == 0) {
-        return E_SUCCESS;
-    }
+    if (n == 0) return E_SUCCESS;
 
-    // Phase 1: Sort by lower 52 bits
-    adaptiveSortLow52(h3Set, n);
-
-    // Phase 2: Canonicalize (remove duplicates and descendants)
-    removeDescendants(h3Set, n);
-
-    // Phase 3: Compact (single pass)
-    *numHexes = compactSinglePass(h3Set, n);
+    adaptiveSortLow52(h3Set, n);                // Phase 1: Sort
+    remove_descendants(h3Set, n);               // Phase 2: Canonicalize
+    *numHexes = compact_single_pass(h3Set, n);  // Phase 3: Compact
 
     return E_SUCCESS;
 }
