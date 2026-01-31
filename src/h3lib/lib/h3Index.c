@@ -763,6 +763,230 @@ H3Error H3_EXPORT(compactCells)(const H3Index *h3Set, H3Index *compactedSet,
     return E_SUCCESS;
 }
 
+// ============================================================================
+// In-place compaction algorithm
+// ============================================================================
+
+/**
+ * Comparison function for sorting H3 indexes by lower 52 bits.
+ * This ordering has a key property: children sort before their parents.
+ */
+static int _cmpLow52(const void *a, const void *b) {
+    H3Index ha = *(const H3Index *)a;
+    H3Index hb = *(const H3Index *)b;
+    ha <<= 12;
+    hb <<= 12;
+    if (ha < hb) return -1;
+    if (ha > hb) return +1;
+    return 0;
+}
+
+/**
+ * Rich comparison of two H3 indexes for ancestor/descendant relationship.
+ * Returns:
+ *   0 if a == b (same cell)
+ *  -1 if a is a proper descendant of b
+ *  +1 if unrelated (neither is an ancestor of the other)
+ */
+static int _cmpCanon(H3Index a, H3Index b) {
+    if (a == b) return 0;
+
+    int resA = H3_GET_RESOLUTION(a);
+    int resB = H3_GET_RESOLUTION(b);
+
+    // Check if a is a descendant of b
+    if (resA > resB) {
+        H3Index parent;
+        if (H3_EXPORT(cellToParent)(a, resB, &parent) == E_SUCCESS) {
+            if (parent == b) return -1;  // a is descendant of b
+        }
+    }
+
+    return +1;  // unrelated
+}
+
+/**
+ * Returns the sequent cell: the sibling with the next digit after the input.
+ * For pentagon parents, skips digit 1 (children have digits 0, 2, 3, 4, 5, 6).
+ */
+static H3Index _sequent(H3Index cell) {
+    int res = H3_GET_RESOLUTION(cell);
+    int digit = H3_GET_INDEX_DIGIT(cell, res);
+    int nextDigit = digit + 1;
+
+    // Pentagon cells skip digit 1
+    if (nextDigit == 1) {
+        H3Index parent;
+        if (H3_EXPORT(cellToParent)(cell, res - 1, &parent) == E_SUCCESS) {
+            if (H3_EXPORT(isPentagon)(parent)) {
+                nextDigit = 2;
+            }
+        }
+    }
+
+    H3Index result = cell;
+    H3_SET_INDEX_DIGIT(result, res, nextDigit);
+    return result;
+}
+
+/**
+ * Returns true if cell has res >= 1 and its resolution digit is 0.
+ * Such cells could potentially start a compactable sibling set.
+ */
+static bool _isFirstChild(H3Index cell) {
+    int res = H3_GET_RESOLUTION(cell);
+    if (res < 1) return false;
+    return H3_GET_INDEX_DIGIT(cell, res) == 0;
+}
+
+/**
+ * Returns true if cur is a first descendant of seq:
+ * - cur is a proper descendant of seq (finer resolution, same ancestor path)
+ * - all digits between seq's res and cur's res are 0
+ */
+static bool _isFirstDescendantOf(H3Index cur, H3Index seq) {
+    if (_cmpCanon(cur, seq) != -1) return false;
+
+    int seqRes = H3_GET_RESOLUTION(seq);
+    int curRes = H3_GET_RESOLUTION(cur);
+    for (int r = seqRes + 1; r <= curRes; r++) {
+        if (H3_GET_INDEX_DIGIT(cur, r) != 0) return false;
+    }
+    return true;
+}
+
+/**
+ * Phase 2: Remove duplicates and descendants.
+ * After sorting by lower 52 bits, parents sort after children.
+ * Walking right to left, we encounter parents first and can remove
+ * any descendants we encounter later.
+ */
+static void _removeDescendants(H3Index *cells, int64_t n) {
+    H3Index parent = H3_NULL;
+
+    for (int64_t i = n - 1; i >= 0; i--) {
+        if (cells[i] == H3_NULL) {
+            continue;
+        }
+
+        if (parent == H3_NULL) {
+            parent = cells[i];
+        } else {
+            int cmp = _cmpCanon(cells[i], parent);
+            if (cmp == 0 || cmp == -1) {
+                // cells[i] equals or is a descendant of parent
+                cells[i] = H3_NULL;
+            } else {
+                parent = cells[i];
+            }
+        }
+    }
+}
+
+/**
+ * Phase 3: Single-pass compaction.
+ * Uses three pointers: i (done), j (pending), k (process).
+ * Returns the count of compacted cells (stored at positions 0 to j-1).
+ */
+static int64_t _compactSinglePass(H3Index *cells, int64_t n) {
+    int64_t i = 0;  // done pointer
+    int64_t j = 0;  // pending pointer (end of pending region)
+    int64_t k = 0;  // process pointer
+
+    // Invariants:
+    // - 0 <= i <= j <= k <= n
+    // - cells[0..i) are done (fully compacted)
+    // - cells[i..j) are pending (might compact with future cells)
+    // - cells[j..k) are junk (can be overwritten)
+    // - cells[k..n) are yet to be processed
+    while (k < n) {
+        if (cells[k] == H3_NULL) {
+            k++;
+            continue;
+        }
+
+        H3Index cur = cells[k];
+
+        // Empty stack: cur either starts a new pending set or goes to done
+        if (i == j) {
+            cells[j] = cur;
+            j++;
+            if (!_isFirstChild(cur)) {
+                i = j;  // Can't compact, move to done
+            }
+            k++;
+            continue;
+        }
+
+        // Non-empty stack: check if cur continues or completes the set
+        H3Index seq = _sequent(cells[j - 1]);
+
+        if (cur == seq) {
+            // Continues or completes the set — add to stack
+            cells[j] = cur;
+            j++;
+
+            int res = H3_GET_RESOLUTION(cur);
+            int digit = H3_GET_INDEX_DIGIT(cur, res);
+            if (digit == 6) {
+                // Completes the set — compact
+                H3Index parent;
+                H3_EXPORT(cellToParent)(cur, res - 1, &parent);
+                int numChildren = H3_EXPORT(isPentagon)(parent) ? 6 : 7;
+                j -= numChildren;
+                cells[k] = parent;
+                continue;  // Process parent next
+            }
+            k++;
+            continue;
+        }
+
+        if (_isFirstDescendantOf(cur, seq)) {
+            // First descendant of sequent — add to stack
+            cells[j] = cur;
+            j++;
+            k++;
+            continue;
+        }
+
+        // Unrelated (or non-first descendant) — flush stack, reconsider cur
+        i = j;
+    }
+
+    return j;  // Compacted cells are at positions 0 to j-1
+}
+
+/**
+ * compactCellsInPlace compresses a set of cells in-place by pruning full
+ * child branches to the parent level. The input array is modified directly,
+ * with compacted cells placed at the front and the new count returned.
+ *
+ * The cells are sorted by lower 52 bits as a side effect. This ordering
+ * places children before parents and groups siblings together.
+ *
+ * @param h3Set     Set of cells (modified in place)
+ * @param numHexes  Input: size of the array. Output: number of compacted cells
+ * @return          An error code on failure
+ */
+H3Error H3_EXPORT(compactCellsInPlace)(H3Index *h3Set, int64_t *numHexes) {
+    int64_t n = *numHexes;
+
+    if (n == 0) {
+        return E_SUCCESS;
+    }
+
+    // Phase 1: Sort by lower 52 bits
+    qsort(h3Set, n, sizeof(H3Index), _cmpLow52);
+
+    // Phase 2: Canonicalize (remove duplicates and descendants)
+    _removeDescendants(h3Set, n);
+
+    // Phase 3: Compact (single pass)
+    *numHexes = _compactSinglePass(h3Set, n);
+
+    return E_SUCCESS;
+}
+
 /**
  * uncompactCells takes a compressed set of cells and expands back to the
  * original set of cells.
