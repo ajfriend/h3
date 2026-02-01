@@ -1,225 +1,92 @@
-<img align="right" src="https://uber.github.io/img/h3Logo-color.svg" alt="H3 Logo" width="200">
+# Experimental Branch: In-Place H3 Compaction
 
-# H3: A Hexagonal Hierarchical Geospatial Indexing System
+> *This branch and README were generated with the help of Claude Code.*
 
-[![test-linux](https://github.com/uber/h3/workflows/test-linux/badge.svg)](https://github.com/uber/h3/actions)
-[![test-macos](https://github.com/uber/h3/workflows/test-macos/badge.svg)](https://github.com/uber/h3/actions)
-[![test-windows](https://github.com/uber/h3/workflows/test-windows/badge.svg)](https://github.com/uber/h3/actions)
-[![test-website](https://github.com/uber/h3/workflows/test-website/badge.svg)](https://github.com/uber/h3/actions)
-[![Coverage Status](https://coveralls.io/repos/github/uber/h3/badge.svg?branch=master)](https://coveralls.io/github/uber/h3?branch=master)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+**Branch:** `aj/new_compact`
 
-H3 is a geospatial indexing system using a hexagonal grid that can be (approximately) subdivided into finer and finer hexagonal grids, combining the benefits of a hexagonal grid with [S2](https://code.google.com/archive/p/s2-geometry-library/)'s hierarchical subdivisions.
+This is an experimental branch exploring an alternative in-place compaction
+algorithm for H3 cells. **It did not beat the existing hash-table implementation**
+for general inputs, but the approach has some useful properties and is preserved
+here for future reference.
 
-Documentation is available at [https://h3geo.org/](https://h3geo.org/). Developer documentation in Markdown format is available under the [dev-docs](./dev-docs/) directory.
+## The Idea
 
- * Post **bug reports or feature requests** to the [GitHub Issues page](https://github.com/uber/h3/issues)
- * Ask **questions** by posting to the [H3 tag on StackOverflow](https://stackoverflow.com/questions/tagged/h3)
- * There is also an [H3 Slack workspace](https://join.slack.com/t/h3-core/shared_invite/zt-g6u5r1hf-W_~uVJmfeiWtMQuBGc1NNg)
+Once we sort a set of H3 cells by their lower 52 bits, we can compact them in a
+single pass. The lower 52 bit ordering has useful properties:
+- Children sort before their parents
+- Siblings are contiguous
+- Zero values (`H3_NULL`) sort first
 
-## Installing
+This enables a three-phase algorithm:
+1. **Sort** by lower 52 bits
+2. **Canonicalize**: remove duplicates and descendants (single right-to-left pass)
+3. **Compact**: merge sibling sets into parents (single left-to-right pass)
 
-We recommend using prebuilt bindings if they are available for your programming language. Bindings for [Java](https://github.com/uber/h3-java), [JavaScript](https://github.com/uber/h3-js), [Python](https://github.com/uber/h3-py), and [others](https://h3geo.org/docs/community/bindings) are available.
+The compaction cascades automatically — when 7 siblings merge into a parent,
+that parent is reprocessed and may complete another sibling set at a coarser
+resolution.
 
-On macOS, you can install H3 using `brew`:
-```
-brew install h3
-```
-Otherwise, to build H3 from source, please see the following instructions.
+## Performance
 
-### Building from source
+Profiling showed that **95% of runtime is spent sorting** for unsorted inputs.
+Since sorting is O(n log n) and hash tables are O(n), we can't beat the existing
+approach for general data — but we tried several sorting strategies:
 
-Still here? To build the H3 C library, you'll need a C compiler (tested with `gcc` and `clang`), [CMake](https://cmake.org/), and [Make](https://www.gnu.org/software/make/). If you intend to contribute to H3, you must have [clang-format](https://clang.llvm.org/docs/ClangFormat.html) installed and we recommend installing [ccmake](https://cmake.org/cmake/help/v3.0/manual/ccmake.1.html) and [LCOV](http://ltp.sourceforge.net/coverage/lcov.php) to configure the `cmake` arguments to build and run the tests and generate the code coverage report. We also recommend using `gcc` for the code coverage as some versions of `clang` generate annotations that aren't compatible with `lcov`. [Doxygen](https://www.doxygen.nl/index.html) is needed to build the API documentation.
+| Approach | Result |
+|----------|--------|
+| `qsort()` (libc) | Baseline, function pointer overhead |
+| Custom quicksort | ~32% faster than qsort (inlined comparison) |
+| Timsort | Rejected — exploits sorted "runs", but real data had avg run length of 2.4 (no structure to exploit) |
+| Adaptive sort | Best compromise — checks sortedness first, uses insertion sort if ≤1% inversions |
 
-#### Install build-time dependencies
+### Benchmarks (Apple M3)
 
-* Alpine
-```
-# Installing the bare build requirements
-apk add cmake make gcc libtool musl-dev
-```
+| Test Case | `compactCells` (hash) | `compactCellsInPlace` (sort) | Winner |
+|-----------|----------------------|------------------------------|--------|
+| Small disk (37 cells) | 0.32 µs | 0.22 µs | **In-place** |
+| Medium disk (271 cells) | 1.81 µs | 2.24 µs | Hash |
+| Large disk (1261 cells) | 8.47 µs | 11.95 µs | Hash |
+| Base cell children (2401 cells) | 14.11 µs | 11.99 µs | **In-place** |
+| Sparse cells (100 cells) | 0.79 µs | 0.70 µs | **In-place** |
+| Pentagon children (286 cells) | 1.93 µs | 1.49 µs | **In-place** |
+| Colorado polygon (47823 cells) | 378 µs | 2053 µs | Hash |
 
-* Debian/Ubuntu
+**Takeaway**: In-place wins when data is already sorted (e.g., from `cellToChildren`)
+or very small. It loses on large unsorted inputs like polygon fills (~5x slower on Colorado).
 
-```
-# Installing the bare build requirements
-sudo apt install cmake make gcc libtool
-# Installing useful tools for development
-sudo apt install clang-format cmake-curses-gui lcov doxygen
-```
+## What It's Still Good For
 
-* macOS (using `brew`)
+Despite being slower overall, this approach has properties the hash-table
+version lacks:
 
-First make sure you [have the developer tools installed](http://osxdaily.com/2014/02/12/install-command-line-tools-mac-os-x/) and then
+- **Canonical output**: cells end up in sorted order, useful for comparisons
+- **Handles duplicates**: gracefully removes redundant cells
+- **Handles ancestors**: removes cells whose ancestors are also present
+- **In-place**: O(1) additional memory (beyond the sort)
+- **Idempotent**: running twice produces the same result
+- **Fast for sorted input**: if your cells come from `cellToChildren`, this approach will typically be faster
 
-```
-# Installing the bare build requirements
-brew install cmake
-# Installing useful tools for development
-brew install clang-format lcov doxygen
-```
+## Files Changed
 
-* Windows (Visual Studio)
+- `src/h3lib/lib/compactCells.c` — the in-place compaction algorithm
+- `src/h3lib/lib/sortH3.c` — sorting utilities (quicksort, insertion sort, adaptive)
+- `src/h3lib/include/sortH3.h` — header for sorting utilities
+- `CMakeLists.txt` — added new source files
 
-You will need to install CMake and Visual Studio, including the Visual C++ compiler. For building on Windows, please follow the [Windows build instructions](dev-docs/build_windows.md).
+## Building and Testing
 
-* FreeBSD
+```bash
+# Build
+just build
 
- ```
-# Installing the build requirements
-sudo pkg install bash cmake gmake doxygen lcov
-```
+# Run compact-specific tests
+just test-compact
 
-#### Compilation
-
-When checking out the H3 Git repository, by default you will check out the latest
-development version of H3. When using H3 in an application, you will want to check
-out the most recently released version:
-
-```
-git checkout v$(<VERSION)
-```
-
-From the repository root, you can compile H3 with:
-
-```
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make
+# Run benchmarks
+just bench
 ```
 
-All subsequent `make` commands should be run from within the `build` directory.
+## Related
 
-**Note**: There are several ways to build H3 with CMake; the method above is just one example that restricts all build artifacts to the `build` directory.
-
-You can install system-wide with:
-
-```
-sudo make install
-```
-
-If using the method above, from the repository root, you can clean all build artifacts with:
-
-```
-rm -rf build
-```
-
-#### Testing
-
-After making the project, you can test with `make test`.
-You can run a faster test suite that excludes the most expensive tests with `make test-fast`.
-
-#### Coverage
-
-You can generate a code coverage report if `lcov` is installed, and if the project was built with the `CMAKE_BUILD_TYPE=Debug` and `ENABLE_COVERAGE=ON` options.
-For example, from a clean repository, you could run:
-
-```
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Debug -DENABLE_COVERAGE=ON ..
-make
-make coverage
-```
-
-You can then view a detailed HTML coverage report by opening `coverage/index.html` in your browser.
-
-#### Benchmarks
-
-You can run timing benchmarks by building with the `CMAKE_BUILD_TYPE=Release`, and running `make benchmarks`:
-
-```
-mkdir build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make
-make benchmarks
-```
-
-#### Documentation
-
-You can build developer documentation with `make docs` if Doxygen was installed when CMake was run. Index of the documentation will be `dev-docs/_build/html/index.html`.
-
-After making the project, you can build KML files to visualize the hexagon grid with `make kml`. The files will be placed in `KML`.
-
-To build the documentation website, see the [website/](./website/) directory.
-
-## Usage
-
-### From the command line
-
-To get the H3 index for some location:
-
-```
-./bin/latLngToCell --resolution 10 --latitude 40.689167 --longitude -74.044444
-```
-
-10 is the H3 resolution, between 0 (coarsest) and 15 (finest). The coordinates entered are the latitude and longitude, in degrees, you want the index for (these coordinates are the Statue of Liberty).  You should get an H3 index as output, like `8a2a1072b59ffff`.
-
-You can then take this index and get some information about it, for example:
-
-```
-./bin/cellToBoundary --index 8a2a1072b59ffff
-```
-
-This will produce the vertices of the hexagon at this location:
-
-```
-8a2a1072b59ffff
-{
-   40.690058601 -74.044151762
-   40.689907695 -74.045061792
-   40.689270936 -74.045341418
-   40.688785091 -74.044711031
-   40.688935993 -74.043801021
-   40.689572744 -74.043521377
-}
-```
-
-You can get the center coordinate of the hexagon like so:
-
-```
-./bin/cellToLatLng --index 8a2a1072b59ffff
-```
-
-This will produce some coordinate:
-
-```
-40.6894218437 -74.0444313999
-```
-
-### From C
-
-The above features of H3 can also be used from C. For example, you can compile and run [examples/index.c](./examples/index.c) like so:
-
-```
-cc -lh3 examples/index.c -o example
-./example
-```
-
-You should get output like:
-
-```
-The index is: 8a2a1072b59ffff
-Boundary vertex #0: 40.690059, -74.044152
-Boundary vertex #1: 40.689908, -74.045062
-Boundary vertex #2: 40.689271, -74.045341
-Boundary vertex #3: 40.688785, -74.044711
-Boundary vertex #4: 40.688936, -74.043801
-Boundary vertex #5: 40.689573, -74.043521
-Center coordinates: 40.689422, -74.044431
-```
-
-## Contributing
-
-Pull requests and Github issues are welcome. Please see our [contributing guide](./CONTRIBUTING.md) for more information.
-
-Before we can merge your changes, you must agree to the [Uber Contributor License Agreement](https://cla-assistant.io/uber/h3).
-
-## Legal and Licensing
-
-H3 is licensed under the [Apache 2.0 License](./LICENSE).
-
-DGGRID
-Copyright (c) 2015 Southern Oregon University
+- Blog post: [A Failed Attempt at Improving H3 Compaction](/blog/h3_compact/)
+- [H3 Bit Layout](/blog/h3_bits/) — understanding the lower 52 bit ordering
