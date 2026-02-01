@@ -326,7 +326,8 @@ set(OTHER_SOURCE_FILES
     src/apps/benchmarks/benchmarkVertex.c
     src/apps/benchmarks/benchmarkIsValidCell.c
     src/apps/benchmarks/benchmarkH3Api.c
-    src/apps/benchmarks/benchmarkArea.c)
+    src/apps/benchmarks/benchmarkArea.c
+    src/apps/benchmarks/benchmarkCompactAlgos.c)
 
 set(ALL_SOURCE_FILES
     ${LIB_SOURCE_FILES} ${APP_SOURCE_FILES} ${TEST_APP_SOURCE_FILES}

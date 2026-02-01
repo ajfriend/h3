@@ -21,33 +21,31 @@
 #include <string.h>
 
 #include "benchmark.h"
-#include "h3Index.h"
 #include "h3api.h"
-#include "latLng.h"
 
 // Macro to benchmark compactCells (copies input, uses separate output)
-#define BENCHMARK_COMPACT(NAME, ITERS)                                    \
-    do {                                                                  \
-        BENCHMARK(compact_##NAME, ITERS, {                                \
-            H3Index *input = malloc(numCells * sizeof(H3Index));          \
-            H3Index *output = malloc(numCells * sizeof(H3Index));         \
-            memcpy(input, cells, numCells * sizeof(H3Index));             \
-            H3_EXPORT(compactCells)(input, output, numCells);             \
-            free(input);                                                  \
-            free(output);                                                 \
-        });                                                               \
+#define BENCHMARK_COMPACT(NAME, ITERS)                            \
+    do {                                                          \
+        BENCHMARK(compact_##NAME, ITERS, {                        \
+            H3Index *input = malloc(numCells * sizeof(H3Index));  \
+            H3Index *output = malloc(numCells * sizeof(H3Index)); \
+            memcpy(input, cells, numCells * sizeof(H3Index));     \
+            H3_EXPORT(compactCells)(input, output, numCells);     \
+            free(input);                                          \
+            free(output);                                         \
+        });                                                       \
     } while (0)
 
 // Macro to benchmark compactCellsInPlace (modifies input in place)
-#define BENCHMARK_COMPACT_INPLACE(NAME, ITERS)                            \
-    do {                                                                  \
-        BENCHMARK(compactInPlace_##NAME, ITERS, {                         \
-            H3Index *input = malloc(numCells * sizeof(H3Index));          \
-            memcpy(input, cells, numCells * sizeof(H3Index));             \
-            int64_t n = numCells;                                         \
-            H3_EXPORT(compactCellsInPlace)(input, &n);                    \
-            free(input);                                                  \
-        });                                                               \
+#define BENCHMARK_COMPACT_INPLACE(NAME, ITERS)                   \
+    do {                                                         \
+        BENCHMARK(compactInPlace_##NAME, ITERS, {                \
+            H3Index *input = malloc(numCells * sizeof(H3Index)); \
+            memcpy(input, cells, numCells * sizeof(H3Index));    \
+            int64_t n = numCells;                                \
+            H3_EXPORT(compactCellsInPlace)(input, &n);           \
+            free(input);                                         \
+        });                                                      \
     } while (0)
 
 BEGIN_BENCHMARKS();
@@ -124,13 +122,14 @@ printf("================================================\n\n");
 
 {
     // Sparse cells that won't compact much
+    // Get all 122 res-0 base cells and convert to res-5 center children
     int64_t numCells = 100;
+    H3Index baseCells[122];
+    H3_EXPORT(getRes0Cells)(baseCells);
     H3Index *cells = malloc(numCells * sizeof(H3Index));
     for (int64_t i = 0; i < numCells; i++) {
         // Different base cells at res 5
-        H3Index h;
-        setH3Index(&h, 5, i % 122, 0);
-        cells[i] = h;
+        H3_EXPORT(cellToCenterChild)(baseCells[i % 122], 5, &cells[i]);
     }
 
     printf("Sparse cells (100 cells, different base cells):\n");
