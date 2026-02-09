@@ -609,4 +609,220 @@ SUITE(compactCells) {
 
         t_assert(out == expected, "uncompactCells size needs 64 bit int");
     }
+
+    // ========================================================================
+    // Tests for compactCellsInPlace
+    // ========================================================================
+
+    TEST(compactCellsInPlace_roundtrip) {
+        int k = 9;
+        int64_t hexCount;
+        t_assertSuccess(H3_EXPORT(maxGridDiskSize)(k, &hexCount));
+        int expectedCompactCount = 73;
+
+        // Generate a set of hexagons to compact
+        H3Index *cells = calloc(hexCount, sizeof(H3Index));
+        t_assertSuccess(H3_EXPORT(gridDisk)(sunnyvale, k, cells));
+
+        int64_t numCells = hexCount;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells, &numCells));
+
+        t_assert(numCells == expectedCompactCount,
+                 "compactCellsInPlace got expected count");
+
+        // Verify we can uncompact back to the original count
+        int64_t uncompactSize;
+        t_assertSuccess(
+            H3_EXPORT(uncompactCellsSize)(cells, numCells, 9, &uncompactSize));
+        t_assert(uncompactSize == hexCount,
+                 "uncompact size matches original count");
+
+        free(cells);
+    }
+
+    TEST(compactCellsInPlace_res0children) {
+        H3Index parent;
+        setH3Index(&parent, 0, 0, 0);
+
+        int64_t arrSize;
+        t_assertSuccess(H3_EXPORT(cellToChildrenSize)(parent, 1, &arrSize));
+
+        H3Index *children = calloc(arrSize, sizeof(H3Index));
+        t_assertSuccess(H3_EXPORT(cellToChildren)(parent, 1, children));
+
+        int64_t numCells = arrSize;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(children, &numCells));
+
+        t_assert(numCells == 1, "compacted to single cell");
+        t_assert(children[0] == parent, "compacted to parent");
+
+        free(children);
+    }
+
+    TEST(compactCellsInPlace_allRes1) {
+        const int64_t numRes0 = 122;
+        const int64_t numRes1 = 842;
+        H3Index *cells0 = calloc(numRes0, sizeof(H3Index));
+        H3Index *cells1 = calloc(numRes1, sizeof(H3Index));
+
+        H3_EXPORT(getRes0Cells)(cells0);
+
+        t_assertSuccess(
+            H3_EXPORT(uncompactCells)(cells0, numRes0, cells1, numRes1, 1));
+
+        int64_t numCells = numRes1;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells1, &numCells));
+
+        t_assert(numCells == numRes0, "compacted to all res 0 cells");
+
+        free(cells0);
+        free(cells1);
+    }
+
+    TEST(compactCellsInPlace_res0) {
+        int64_t numCells = NUM_BASE_CELLS;
+        H3Index *res0Hexes = calloc(numCells, sizeof(H3Index));
+        for (int i = 0; i < numCells; i++) {
+            setH3Index(&res0Hexes[i], 0, i, 0);
+        }
+
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(res0Hexes, &numCells));
+
+        t_assert(numCells == NUM_BASE_CELLS, "res 0 cells remain unchanged");
+
+        free(res0Hexes);
+    }
+
+    TEST(compactCellsInPlace_uncompactable) {
+        int64_t numCells = 3;
+        H3Index cells[3];
+        memcpy(cells, uncompactable, sizeof(cells));
+
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells, &numCells));
+
+        t_assert(numCells == 3, "uncompactable cells remain unchanged");
+    }
+
+    TEST(compactCellsInPlace_empty) {
+        int64_t numCells = 0;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(NULL, &numCells));
+        t_assert(numCells == 0, "empty input returns 0");
+    }
+
+    TEST(compactCellsInPlace_duplicates) {
+        // In-place compaction handles duplicates by removing them
+        H3Index parent;
+        setH3Index(&parent, 0, 0, 0);
+
+        int64_t arrSize;
+        t_assertSuccess(H3_EXPORT(cellToChildrenSize)(parent, 1, &arrSize));
+
+        // Allocate extra space for duplicates
+        H3Index *children = calloc(arrSize + 2, sizeof(H3Index));
+        t_assertSuccess(H3_EXPORT(cellToChildren)(parent, 1, children));
+
+        // Add duplicates
+        children[arrSize] = children[0];
+        children[arrSize + 1] = children[1];
+
+        int64_t numCells = arrSize + 2;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(children, &numCells));
+
+        // Should still compact to parent (duplicates removed)
+        t_assert(numCells == 1, "compacted to single cell despite duplicates");
+        t_assert(children[0] == parent, "compacted to parent");
+
+        free(children);
+    }
+
+    TEST(compactCellsInPlace_pentagon) {
+        H3Index pentagon;
+        setH3Index(&pentagon, 1, 4, 0);
+
+        int64_t childrenSz;
+        t_assertSuccess(
+            H3_EXPORT(uncompactCellsSize)(&pentagon, 1, 2, &childrenSz));
+        H3Index *children = calloc(childrenSz, sizeof(H3Index));
+        t_assertSuccess(
+            H3_EXPORT(uncompactCells)(&pentagon, 1, children, childrenSz, 2));
+
+        int64_t numCells = childrenSz;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(children, &numCells));
+
+        t_assert(numCells == 1, "pentagon compacted to single cell");
+        t_assert(children[0] == pentagon, "compacted to correct pentagon");
+
+        free(children);
+    }
+
+    TEST(compactCellsInPlace_withDescendants) {
+        // Test that when both a parent and its descendants are in the input,
+        // the descendants are removed
+        H3Index parent;
+        setH3Index(&parent, 5, 0, 0);
+
+        int64_t childrenSz;
+        t_assertSuccess(H3_EXPORT(cellToChildrenSize)(parent, 6, &childrenSz));
+
+        // Allocate space for parent + children
+        H3Index *cells = calloc(childrenSz + 1, sizeof(H3Index));
+        cells[0] = parent;
+        t_assertSuccess(H3_EXPORT(cellToChildren)(parent, 6, &cells[1]));
+
+        int64_t numCells = childrenSz + 1;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells, &numCells));
+
+        // Should compact to just the parent
+        t_assert(numCells == 1, "compacted to single cell");
+        t_assert(cells[0] == parent, "kept the parent");
+
+        free(cells);
+    }
+
+    TEST(compactCellsInPlace_mixedResolutions) {
+        // Create a mix of cells at different resolutions that should compact
+        H3Index parent;
+        setH3Index(&parent, 3, 0, 0);
+
+        // Get all grandchildren (res 5)
+        int64_t grandchildrenSz;
+        t_assertSuccess(
+            H3_EXPORT(cellToChildrenSize)(parent, 5, &grandchildrenSz));
+        H3Index *cells = calloc(grandchildrenSz, sizeof(H3Index));
+        t_assertSuccess(H3_EXPORT(cellToChildren)(parent, 5, cells));
+
+        int64_t numCells = grandchildrenSz;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells, &numCells));
+
+        // Should compact all the way back to parent
+        t_assert(numCells == 1, "compacted to single cell");
+        t_assert(cells[0] == parent, "compacted to original parent");
+
+        free(cells);
+    }
+
+    TEST(compactCellsInPlace_cascading) {
+        // Test cascading compaction: grandchildren -> children -> parent
+        H3Index parent;
+        setH3Index(&parent, 2, 5, 0);  // Use a hexagon (not pentagon)
+
+        // First verify it's not a pentagon
+        t_assert(!H3_EXPORT(isPentagon)(parent), "test cell is not a pentagon");
+
+        // Get all children at res 4 (two levels down)
+        int64_t descendantSz;
+        t_assertSuccess(
+            H3_EXPORT(cellToChildrenSize)(parent, 4, &descendantSz));
+        H3Index *cells = calloc(descendantSz, sizeof(H3Index));
+        t_assertSuccess(H3_EXPORT(cellToChildren)(parent, 4, cells));
+
+        int64_t numCells = descendantSz;
+        t_assertSuccess(H3_EXPORT(compactCellsInPlace)(cells, &numCells));
+
+        // Should compact all the way back to the res 2 parent
+        t_assert(numCells == 1, "cascading compaction to single cell");
+        t_assert(cells[0] == parent, "cascading compaction to correct parent");
+
+        free(cells);
+    }
 }

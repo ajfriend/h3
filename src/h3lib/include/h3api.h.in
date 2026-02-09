@@ -648,6 +648,12 @@ DECLSPEC H3Error H3_EXPORT(childPosToCell)(int64_t childPos, H3Index parent,
 DECLSPEC H3Error H3_EXPORT(compactCells)(const H3Index *h3Set,
                                          H3Index *compactedSet,
                                          const int64_t numHexes);
+
+/** @brief compacts the given set of hexagons in place, modifying the input
+ * array. The compacted cells are placed at the front of the array, and the
+ * new count is returned via numHexes. Cells are sorted by lower 52 bits. */
+DECLSPEC H3Error H3_EXPORT(compactCellsInPlace)(H3Index *h3Set,
+                                                int64_t *numHexes);
 /** @} */
 
 /** @defgroup uncompactCells uncompactCells

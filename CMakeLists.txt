@@ -172,7 +172,10 @@ set(LIB_SOURCE_FILES
     src/h3lib/include/algos.h
     src/h3lib/include/adder.h
     src/h3lib/include/area.h
+    src/h3lib/include/sortH3.h
     src/h3lib/lib/h3Assert.c
+    src/h3lib/lib/sortH3.c
+    src/h3lib/lib/compactCells.c
     src/h3lib/lib/algos.c
     src/h3lib/lib/coordijk.c
     src/h3lib/lib/bbox.c
@@ -323,7 +326,8 @@ set(OTHER_SOURCE_FILES
     src/apps/benchmarks/benchmarkVertex.c
     src/apps/benchmarks/benchmarkIsValidCell.c
     src/apps/benchmarks/benchmarkH3Api.c
-    src/apps/benchmarks/benchmarkArea.c)
+    src/apps/benchmarks/benchmarkArea.c
+    src/apps/benchmarks/benchmarkCompactAlgos.c)
 
 set(ALL_SOURCE_FILES
     ${LIB_SOURCE_FILES} ${APP_SOURCE_FILES} ${TEST_APP_SOURCE_FILES}
@@ -680,6 +684,8 @@ if(BUILD_BENCHMARKS)
                      src/apps/benchmarks/benchmarkPolygonToCellsExperimental.c)
     add_h3_benchmark(benchmarkArea
                      src/apps/benchmarks/benchmarkArea.c)
+    add_h3_benchmark(benchmarkCompactAlgos
+                     src/apps/benchmarks/benchmarkCompactAlgos.c)
     if(ENABLE_REQUIRES_ALL_SYMBOLS)
         add_h3_benchmark(benchmarkPolygon
                          src/apps/benchmarks/benchmarkPolygon.c)
