@@ -204,7 +204,7 @@ static H3Error linkedGeoLoopToGeoLoop(const LinkedGeoLoop *linked,
  * Convert a single LinkedGeoPolygon (outer loop + holes) to a GeoPolygon.
  * The output's geoloop and holes are allocated; on failure, all partial
  * allocations are freed and `out` is left in a clean (zeroed) state.
- * @param  linked  Source linked polygon
+ * @param  linked  Source LinkedGeoPolygon
  * @param  out     Output GeoPolygon (caller-owned, will be populated)
  * @return         E_SUCCESS or E_MEMORY_ALLOC
  */
@@ -252,7 +252,7 @@ static H3Error linkedGeoPolygonToGeoPolygon(const LinkedGeoPolygon *linked,
  * On success the caller owns the output and must free
  * it with `destroyGeoMultiPolygon()`.
  *
- * @param  linked  Head of linked polygon chain
+ * @param  linked  Head of LinkedGeoPolygon chain
  * @param  out     Output GeoMultiPolygon (caller-owned, will be populated)
  * @return         E_SUCCESS, E_FAILED (invalid geometry), or E_MEMORY_ALLOC
  */
@@ -294,7 +294,7 @@ H3Error linkedGeoPolygonToGeoMultiPolygon(const LinkedGeoPolygon *linked,
 /**
  * Populate a LinkedGeoLoop with vertices from a GeoLoop.
  * @param  src   Source GeoLoop
- * @param  loop  Target linked loop (must be calloc-zeroed)
+ * @param  loop  Target LinkedGeoLoop (must be calloc-zeroed)
  * @return       E_SUCCESS or E_MEMORY_ALLOC
  */
 static H3Error geoLoopToLinkedGeoLoop(const GeoLoop *src, LinkedGeoLoop *loop) {
@@ -315,7 +315,7 @@ static H3Error geoLoopToLinkedGeoLoop(const GeoLoop *src, LinkedGeoLoop *loop) {
 }
 
 /**
- * Convert a single GeoPolygon to linked loops within a LinkedGeoPolygon.
+ * Convert a single GeoPolygon to LinkedGeoLoops within a LinkedGeoPolygon.
  * @param  poly        Source GeoPolygon
  * @param  currentPoly Target LinkedGeoPolygon to populate
  * @return             E_SUCCESS or E_MEMORY_ALLOC
