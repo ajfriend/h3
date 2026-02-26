@@ -176,8 +176,8 @@ int countLinkedCoords(const LinkedGeoLoop *loop) {
 }
 
 /**
- * Convert a linked geo loop to a GeoLoop by counting coords and copying.
- * @param  linked  Source linked loop
+ * Convert a LinkedGeoLoop to a GeoLoop by counting coords and copying.
+ * @param  linked  Source LinkedGeoLoop
  * @param  out     Output GeoLoop (verts will be allocated)
  * @return         E_SUCCESS, E_FAILED (< 3 verts), or E_MEMORY_ALLOC
  */
