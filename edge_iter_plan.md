@@ -13,8 +13,45 @@ it from a hypothetical iterator that yields all directed edges (interior
 
 The `child_edge_iter` branch has diverged from master and carries scratch
 files (`notes.c`, `todo.md`, justfile changes). The algorithm itself is
-solid — identical to the proven Zig version — but the C code misses a
+solid -- identical to the proven Zig version -- but the C code misses a
 couple of cleanups the Zig version got right.
+
+## Naming Convention
+
+Follow the existing iterator naming pattern from `iterators.h`:
+
+| Existing               | GosperIter                    |
+|------------------------|-------------------------------|
+| `IterCellsChildren`    | `IterGosper`                  |
+| `iterInitParent(h, r)` | `iterInitGosper(h, childRes)` |
+| `iterStepChild(&iter)` | `iterStepGosper(&iter)`       |
+| `.h` (current cell)    | `.e` (current directed edge)  |
+
+The old branch used `init_EdgeIter` / `step_EdgeIter` which doesn't
+match codebase conventions.
+
+## Scope
+
+- **Internal API only** -- no `DECLSPEC`, no `H3_EXPORT`. This is a
+  building block for `cellsToMultiPolygon`, not a public function.
+- **No input validation** -- callers are internal and already validate
+  upstream.
+- **Own header/source** -- `gosperIter.h` / `gosperIter.c`, separate
+  from `iterators.h` since the concern is different.
+
+## Priority: Clarity Over Speed
+
+This iterator is expected to provide a significant speed benefit over
+the current approach (enumerating child cells then computing boundaries),
+but the goal of this initial implementation is **clarity for code
+review**, not maximum performance. An optimization pass will follow.
+
+That said, avoid structural choices that would require large refactors
+later. Specifically: keep the iterator state self-contained in the
+struct (no heap allocation), keep the per-step work O(1), and keep the
+boundary walk logic in its own static function so it can be replaced or
+inlined independently. The current algorithm already satisfies all of
+these -- just don't trade them away for readability shortcuts.
 
 ## Files to Create
 
@@ -31,7 +68,7 @@ couple of cleanups the Zig version got right.
 |--------------------------------------|---------------------------------------|
 | `CMakeLists.txt`                     | Add header, source, benchmark entries |
 | `CMakeTests.cmake`                   | Add `testGosperIter` test entry       |
-| `src/h3lib/include/mathExtensions.h` | Add `MIN` macro (used by test helper) |
+| `src/h3lib/include/mathExtensions.h` | Add `MIN` macro                       |
 
 ## Improvements Over Current Branch
 
@@ -44,11 +81,11 @@ and reserved bits on the input cell directly.
 ```c
 if (parent_res == child_res) {
     // No digit setup, resolution change, or I[] init needed
-    ei.e = h;
-    H3_SET_MODE(ei.e, H3_DIRECTEDEDGE_MODE);
-    H3_SET_RESERVED_BITS(ei.e, edge_seq[0]);
-    ei.num_edges = is_pentagon ? 5 : 6;
-    return ei;
+    iter.e = h;
+    H3_SET_MODE(iter.e, H3_DIRECTEDEDGE_MODE);
+    H3_SET_RESERVED_BITS(iter.e, edge_seq[0]);
+    iter.num_edges = is_pentagon ? 5 : 6;
+    return iter;
 }
 ```
 
@@ -67,16 +104,22 @@ With a straight increment and pentagon skip:
 
 ```c
 // After
-ei->i++;
-if (ei->is_pentagon && ei->i == 1) ei->i = 2;
+iter->_i++;
+if (iter->_isPentagon && iter->_i == 1) iter->_i = 2;
 ```
 
 This works because `num_edges` guarantees we never wrap past index 5.
 Clearer intent, no modular arithmetic for the simple case.
 
-### 3. Drop scratch files
+### 3. Consistent naming
 
-The new branch carries only the iterator itself — no `notes.c`,
+Rename `init_EdgeIter` / `step_EdgeIter` to `iterInitGosper` /
+`iterStepGosper`. Prefix internal struct fields with `_` to match
+`IterCellsChildren` convention (e.g. `_parentRes`, `_skipDigit`).
+
+### 4. Drop scratch files
+
+The new branch carries only the iterator itself -- no `notes.c`,
 `todo.md`, `.gitignore` changes, or `justfile` additions.
 
 ## Not Changing
