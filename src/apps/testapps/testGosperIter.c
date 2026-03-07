@@ -262,6 +262,26 @@ SUITE(gosper_iter) {
         check_expected_edges(h, res, expected, ARRAY_SIZE(expected));
     }
 
+    TEST(high_res_full) {
+        // Hex and pentagon at res 5, 8, 10 with gaps reaching res 15
+        H3Index cells[] = {
+            0x85080003fffffff,  // res 5 pentagon
+            0x8508000ffffffff,  // res 5 hexagon
+            0x8808000001fffff,  // res 8 pentagon
+            0x8808000009fffff,  // res 8 hexagon
+            0x8a0800000007fff,  // res 10 pentagon
+            0x8a0800000017fff,  // res 10 hexagon
+        };
+        for (int i = 0; i < (int)ARRAY_SIZE(cells); i++) {
+            int parentRes = H3_EXPORT(getResolution)(cells[i]);
+            for (int gap = 3; gap <= 5; gap++) {
+                int childRes = parentRes + gap;
+                if (childRes > 15) continue;
+                check_all(cells[i], childRes);
+            }
+        }
+    }
+
     TEST(hex_edges_2_to_4) {
         H3Index h = 0x82c64ffffffffff;
         int res = 4;

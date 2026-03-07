@@ -127,7 +127,7 @@ void iterStepGosper(IterGosper *iter) {
 }
 
 IterGosper iterInitGosper(H3Index h, int childRes) {
-    int parentRes = H3_EXPORT(getResolution)(h);
+    int parentRes = H3_GET_RESOLUTION(h);
     bool pent = H3_EXPORT(isPentagon)(h);
 
     IterGosper iter = {
