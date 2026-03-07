@@ -49,7 +49,7 @@ void check_iter(H3Index h, int childRes) {
     int64_t expectedEdges = (pent ? 5 : 6) * _ipow(3, childRes - parentRes);
     t_assert(iter._numEdges == expectedEdges, "correct number of edges");
 
-    int i;
+    int64_t i;
     for (i = 0; iter.e; i++) {
         H3Index prev = iter.e;
         iterStepGosper(&iter);

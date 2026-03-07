@@ -35,13 +35,13 @@
 #include "h3Index.h"
 #include "mathExtensions.h"
 
-// Mapping from 18-element boundary walk positions to H3 digit values.
-// 6 groups of 3: each group corresponds to one edge of the hexagon.
-static const int8_t base[] = {1, 1, 1, 5, 5, 5, 4, 4, 4,
-                              6, 6, 6, 2, 2, 2, 3, 3, 3};
+// H3 digit at each of the 18 boundary walk positions.
+// 6 groups of 3: each group corresponds to one face of the hexagon.
+static const int8_t walk_digit[] = {1, 1, 1, 5, 5, 5, 4, 4, 4,
+                                    6, 6, 6, 2, 2, 2, 3, 3, 3};
 
-// Sequence of edge directions stored in the H3 reserved bits.
-static const int8_t edge_seq[] = {3, 1, 5, 4, 6, 2};
+// Edge direction (stored in reserved bits) at each edge index.
+static const int8_t edge_dir[] = {3, 1, 5, 4, 6, 2};
 
 /**
  * Advance the boundary walk at resolution r.
@@ -53,23 +53,23 @@ static const int8_t edge_seq[] = {3, 1, 5, 4, 6, 2};
  *
  * @return true if the H3 digit at this resolution changed.
  */
-static bool stepBoundaryCell(int8_t *I, H3Index *h, int8_t r,
+static bool stepBoundaryCell(int8_t *walkPos, H3Index *h, int8_t r,
                              int8_t parentRes) {
     int prevDigit = H3_GET_INDEX_DIGIT(*h, r);
 
     // At transition points, advance the parent resolution first
-    if ((r > parentRes + 1) && (I[r] % 3 == r % 2)) {
-        bool parentChanged = stepBoundaryCell(I, h, r - 1, parentRes);
+    if ((r > parentRes + 1) && (walkPos[r] % 3 == r % 2)) {
+        bool parentChanged = stepBoundaryCell(walkPos, h, r - 1, parentRes);
         if (parentChanged) {
-            I[r] -= 6;
+            walkPos[r] -= 6;
         }
     }
 
     // Advance to next position: +19 ≡ +1 (mod 18), stays positive after -6
-    I[r] = (I[r] + 19) % 18;
+    walkPos[r] = (walkPos[r] + 19) % 18;
 
     // Update the H3 digit from the base mapping
-    int8_t newDigit = base[I[r]];
+    int8_t newDigit = walk_digit[walkPos[r]];
     H3_SET_INDEX_DIGIT(*h, r, newDigit);
 
     return newDigit != prevDigit;
@@ -80,17 +80,18 @@ static bool stepBoundaryCell(int8_t *I, H3Index *h, int8_t r,
  */
 static void stepInternal(IterGosper *iter) {
     H3Index prev = iter->e;
-    stepBoundaryCell(iter->_I, &(iter->e), iter->_childRes, iter->_parentRes);
+    stepBoundaryCell(iter->_walkPos, &(iter->e), iter->_childRes,
+                     iter->_parentRes);
 
     // When the boundary cell changes, offset the edge index by -2 to
     // account for the new cell's edge alignment relative to the previous.
     if (prev != iter->e) {
-        iter->_i -= 2;
+        iter->_edgeIdx -= 2;
     }
     // Advance to next edge: +7 ≡ +1 (mod 6), stays positive after -2
-    iter->_i = (iter->_i + 7) % 6;
+    iter->_edgeIdx = (iter->_edgeIdx + 7) % 6;
 
-    H3_SET_RESERVED_BITS(iter->e, edge_seq[iter->_i]);
+    H3_SET_RESERVED_BITS(iter->e, edge_dir[iter->_edgeIdx]);
 }
 
 /**
@@ -114,10 +115,10 @@ void iterStepGosper(IterGosper *iter) {
 
     if (iter->_parentRes == iter->_childRes) {
         // Same-resolution: simple increment with pentagon skip
-        iter->_i++;
-        if (iter->_isPentagon && iter->_i == 1) iter->_i = 2;
+        iter->_edgeIdx++;
+        if (iter->_isPentagon && iter->_edgeIdx == 1) iter->_edgeIdx = 2;
 
-        H3_SET_RESERVED_BITS(iter->e, edge_seq[iter->_i]);
+        H3_SET_RESERVED_BITS(iter->e, edge_dir[iter->_edgeIdx]);
     } else {
         // Multi-resolution: walk boundary cells
         stepInternal(iter);
@@ -132,17 +133,17 @@ IterGosper iterInitGosper(H3Index h, int childRes) {
     IterGosper iter = {
         .e = h,
         ._numEdges = 0,
-        ._I = {0},
+        ._walkPos = {0},
         ._parentRes = parentRes,
         ._childRes = childRes,
-        ._i = 0,
+        ._edgeIdx = 0,
         ._isPentagon = pent,
     };
 
     // Same-resolution fast path: no digit/resolution setup needed
     if (parentRes == childRes) {
         H3_SET_MODE(iter.e, H3_DIRECTEDEDGE_MODE);
-        H3_SET_RESERVED_BITS(iter.e, edge_seq[0]);
+        H3_SET_RESERVED_BITS(iter.e, edge_dir[0]);
         iter._numEdges = pent ? 5 : 6;
         return iter;
     }
@@ -151,16 +152,16 @@ IterGosper iterInitGosper(H3Index h, int childRes) {
     H3_SET_RESOLUTION(iter.e, childRes);
     for (int r = parentRes + 1; r <= childRes; r++) {
         if (r == parentRes + 1) {
-            iter._I[r] = 0;
+            iter._walkPos[r] = 0;
         } else {
-            iter._I[r] = (r % 2 == 0) ? 16 : 14;
+            iter._walkPos[r] = (r % 2 == 0) ? 16 : 14;
         }
-        H3_SET_INDEX_DIGIT(iter.e, r, base[iter._I[r]]);
+        H3_SET_INDEX_DIGIT(iter.e, r, walk_digit[iter._walkPos[r]]);
     }
 
     // Set edge mode and initial direction
     H3_SET_MODE(iter.e, H3_DIRECTEDEDGE_MODE);
-    H3_SET_RESERVED_BITS(iter.e, edge_seq[iter._i]);
+    H3_SET_RESERVED_BITS(iter.e, edge_dir[iter._edgeIdx]);
 
     // Skip invalid pentagon edges at start
     skipPentagonEdges(&iter);

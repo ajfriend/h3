@@ -46,10 +46,10 @@ typedef struct {
     int64_t _numEdges;  // Remaining edges to yield
 
     // Internal state
-    int8_t _I[16];  // Boundary walk position per resolution level
+    int8_t _walkPos[16];  // Boundary walk position per resolution level
     int8_t _parentRes;
     int8_t _childRes;
-    int8_t _i;  // Index into edge direction sequence
+    int8_t _edgeIdx;  // Index into edge direction sequence
     bool _isPentagon;
 } IterGosper;
 
