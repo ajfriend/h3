@@ -30,9 +30,14 @@
  * IterGosper: iterator for the directed edges on the boundary of a cell's
  * child set (the Gosper island outline) at a given resolution.
  *
+ * Each yielded edge is a directed edge whose origin is a child of the
+ * parent cell and whose destination is not. The edges form a closed loop
+ * in geometric order around the outline.
+ *
  * Constructor:
  *
- * Initialize with `iterInitGosper`.
+ * Initialize with `iterInitGosper(cell, childRes)`.
+ * Requires `childRes >= getResolution(cell)` and a valid cell.
  *
  * Iteration:
  *

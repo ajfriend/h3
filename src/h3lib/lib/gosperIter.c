@@ -21,10 +21,26 @@
  * directed edges (the Gosper island). For a hexagon this is 6 * 3^(R - r)
  * edges; for a pentagon, 5 * 3^(R - r).
  *
- * The algorithm walks the boundary by tracking position in an 18-element
- * cycle per resolution level. Each cycle encodes 6 edges with 3 child
- * positions each. Transitions between resolution levels are coordinated
- * so the walk produces edges in geometric order around the outline.
+ * ## Geometric model
+ *
+ * A hexagon has 6 faces. Each face's boundary segment subdivides into 3
+ * segments at the next finer resolution (the Gosper fractal property).
+ * This gives 6 × 3 = 18 walk positions per resolution level.
+ *
+ * The `walk_digit` table maps these 18 positions to H3 digit values:
+ * the 6 non-center digits {1,5,4,6,2,3} in geometric order around the
+ * hexagon, each repeated 3× for the subdivision.
+ *
+ * The `edge_dir` table maps 6 edge indices to H3 edge direction values,
+ * also in geometric order around the hexagon.
+ *
+ * ## Multi-resolution coordination
+ *
+ * For gaps > 1 resolution level, each level maintains its own walk
+ * position. The levels coordinate via recursive advancement: when a
+ * child level reaches a face boundary (a transition between groups of
+ * 3), it first advances its parent level. If the parent's digit changed,
+ * the child rewinds by 6 positions (one face group) to stay aligned.
  */
 
 #include "gosperIter.h"
@@ -36,11 +52,13 @@
 #include "mathExtensions.h"
 
 // H3 digit at each of the 18 boundary walk positions.
-// 6 groups of 3: each group corresponds to one face of the hexagon.
+// The 6 non-center digits {1,5,4,6,2,3} in geometric order around the
+// hexagon, each repeated 3× for the fractal subdivision at each face.
 static const int8_t walk_digit[] = {1, 1, 1, 5, 5, 5, 4, 4, 4,
                                     6, 6, 6, 2, 2, 2, 3, 3, 3};
 
-// Edge direction (stored in reserved bits) at each edge index.
+// H3 edge direction at each edge index, in geometric order around the
+// hexagon. Stored in the directed edge's reserved bits.
 static const int8_t edge_dir[] = {3, 1, 5, 4, 6, 2};
 
 /**
@@ -61,6 +79,7 @@ static bool stepBoundaryCell(int8_t *walkPos, H3Index *h, int8_t r,
     if ((r > parentRes + 1) && (walkPos[r] % 3 == r % 2)) {
         bool parentChanged = stepBoundaryCell(walkPos, h, r - 1, parentRes);
         if (parentChanged) {
+            // Parent digit changed → new face. Rewind one face group.
             walkPos[r] -= 6;
         }
     }
@@ -83,8 +102,8 @@ static void stepInternal(IterGosper *iter) {
     stepBoundaryCell(iter->_walkPos, &(iter->e), iter->_childRes,
                      iter->_parentRes);
 
-    // When the boundary cell changes, offset the edge index by -2 to
-    // account for the new cell's edge alignment relative to the previous.
+    // When the walk moves to a new cell, its edges are rotated ~120°
+    // relative to the previous cell — offset by 2 edge positions.
     if (prev != iter->e) {
         iter->_edgeIdx -= 2;
     }
@@ -148,7 +167,11 @@ IterGosper iterInitGosper(H3Index h, int childRes) {
         return iter;
     }
 
-    // Set resolution to child level and initialize boundary walk
+    // Set resolution to child level and initialize boundary walk.
+    // The first child level starts at walk position 0. Deeper levels
+    // start pre-wound so the first stepBoundaryCell lands them at the
+    // correct starting position. Even/odd distinction matches H3's
+    // alternating Class II/III orientations: 16 = 18-2, 14 = 18-4.
     H3_SET_RESOLUTION(iter.e, childRes);
     for (int r = parentRes + 1; r <= childRes; r++) {
         if (r == parentRes + 1) {
