@@ -17,8 +17,9 @@ test-fast: build
 test-slow: build
     cd build; make test
 
+# Run a single test binary. Dots (progress) go to /dev/null; failures print to stderr.
 test-one TEST: build
-    ./build/bin/{{TEST}}
+    ./build/bin/{{TEST}} > /dev/null
 
 test:
     just test-fast
