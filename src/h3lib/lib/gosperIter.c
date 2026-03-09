@@ -90,7 +90,11 @@ static bool stepBoundaryCell(int8_t *walkPos, H3Index *h, int8_t r,
                              int8_t parentRes) {
     int prevDigit = H3_GET_INDEX_DIGIT(*h, r);
 
-    // At transition points, advance the parent resolution first
+    // At face-group boundaries, advance the parent resolution first.
+    // H3 alternates Class II (even res) and Class III (odd res) orientations,
+    // which shifts where the boundary between groups of 3 falls:
+    //   even r → transition at walkPos % 3 == 0 (positions 0, 3, 6, ...)
+    //   odd r  → transition at walkPos % 3 == 1 (positions 1, 4, 7, ...)
     if ((r > parentRes + 1) && (walkPos[r] % 3 == r % 2)) {
         bool parentChanged = stepBoundaryCell(walkPos, h, r - 1, parentRes);
         if (parentChanged) {
@@ -208,7 +212,11 @@ IterGosper iterInitGosper(H3Index h, int childRes) {
     H3_SET_MODE(iter.e, H3_DIRECTEDEDGE_MODE);
     H3_SET_RESERVED_BITS(iter.e, edge_dir[iter._edgeIdx]);
 
-    // Skip invalid pentagon edges at start
+    // For pentagons, the walk starts at digit 1 (the missing K-axis face).
+    // Skip past those positions to reach the first valid edge.
+    // _numEdges must be set AFTER this: skipPentagonEdges calls stepInternal
+    // (which doesn't decrement _numEdges), and the count formula already
+    // accounts for the missing face (5 instead of 6).
     skipPentagonEdges(&iter);
 
     // Total edges: faces * 3^(childRes - parentRes)

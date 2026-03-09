@@ -755,6 +755,11 @@ static H3Error createArcSetGosper(const H3Index *cells, int64_t numCells,
  * This is faster than the flat approach for compacted input because it avoids
  * enumerating and canceling the vast majority of internal edges.
  *
+ * Unlike cellsToMultiPolygon, this function does NOT validate, deduplicate,
+ * or compact the input. The caller must ensure cells are valid, non-
+ * overlapping, and at resolutions <= targetRes. For best performance,
+ * compact the input with compactCells before calling.
+ *
  * @param cells Array of valid H3 cells (may be at mixed resolutions).
  * @param numCells Number of cells.
  * @param targetRes Resolution of the output edges. Must be >= resolution
