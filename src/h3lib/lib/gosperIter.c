@@ -41,6 +41,21 @@
  * child level reaches a face boundary (a transition between groups of
  * 3), it first advances its parent level. If the parent's digit changed,
  * the child rewinds by 6 positions (one face group) to stay aligned.
+ *
+ * ## Pentagon handling
+ *
+ * Pentagons have 5 faces instead of 6: the K-axis (H3 digit 1) has no
+ * child cell. The walk tables are the same as for hexagons, but we skip
+ * any walk positions that land on the missing face.
+ *
+ * For same-resolution pentagons, we simply skip edge index 1 (there are
+ * only 5 directed edges). For multi-resolution pentagons, the walk_digit
+ * table places digit 1 at positions 0-2, so the iterator can land on
+ * that digit during normal advancement. `skipPentagonEdges` detects this
+ * by checking digit 1 at parentRes+1 (the first child level, which
+ * determines the face) and advances past it. This check is sufficient
+ * because deeper resolution levels never independently change which face
+ * the walk is on — face transitions always propagate up to parentRes+1.
  */
 
 #include "gosperIter.h"
@@ -114,7 +129,13 @@ static void stepInternal(IterGosper *iter) {
 }
 
 /**
- * Skip edges at pentagon vertex 1 (the K-axis), which don't exist.
+ * Skip edges on the missing pentagon face (K-axis, digit 1).
+ *
+ * The boundary walk uses the same 18-position table for pentagons and
+ * hexagons, so it can land on digit 1 positions that don't exist on a
+ * pentagon. We detect this by checking the digit at parentRes+1, which
+ * determines the face. Multiple consecutive positions may have digit 1
+ * (up to 3 per face group), so we loop until we're past them.
  */
 static void skipPentagonEdges(IterGosper *iter) {
     while (iter->_isPentagon && iter->e != H3_NULL &&
@@ -133,7 +154,8 @@ void iterStepGosper(IterGosper *iter) {
     }
 
     if (iter->_parentRes == iter->_childRes) {
-        // Same-resolution: simple increment with pentagon skip
+        // Same-resolution: cycle through edge indices, skipping index 1
+        // for pentagons (the K-axis edge doesn't exist).
         iter->_edgeIdx++;
         if (iter->_isPentagon && iter->_edgeIdx == 1) iter->_edgeIdx = 2;
 
