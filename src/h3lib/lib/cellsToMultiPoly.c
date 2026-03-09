@@ -760,6 +760,13 @@ static H3Error createArcSetGosper(const H3Index *cells, int64_t numCells,
  * overlapping, and at resolutions <= targetRes. For best performance,
  * compact the input with compactCells before calling.
  *
+ * TODO: Consider requiring sorted, pre-compacted input and validating that
+ * cheaply. A linear scan over sorted input can verify: (1) sorted order,
+ * (2) no cell is an ancestor of the next (no overlaps), and (3) no
+ * complete set of same-resolution siblings is present (i.e., the input
+ * is fully compacted). Check (3) may need a right-to-left scan so that
+ * consecutive siblings can be counted efficiently.
+ *
  * @param cells Array of valid H3 cells (may be at mixed resolutions).
  * @param numCells Number of cells.
  * @param targetRes Resolution of the output edges. Must be >= resolution
