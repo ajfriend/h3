@@ -8,8 +8,10 @@
 #include "algos.h"
 #include "alloc.h"
 #include "area.h"
+#include "gosperIter.h"
 #include "h3Assert.h"
 #include "h3api.h"
+#include "mathExtensions.h"
 
 static inline H3Error validateCellSet(const H3Index *cells,
                                       const int64_t numCells) {
@@ -573,6 +575,38 @@ static H3Error createMultiPolygon(SortableLoopSet loopset,
 }
 
 /**
+ * Shared pipeline: cancel arc pairs, extract loops, build polygons.
+ * Takes ownership of arcset on success (caller must not free).
+ * On error, arcset is cleaned up here.
+ */
+static H3Error arcSetToMultiPolygon(ArcSet *arcset, GeoMultiPolygon *out) {
+    H3Error err = cancelArcPairs(*arcset);
+    if (NEVER(err)) {
+        destroyArcSet(arcset);
+        return err;
+    }
+
+    SortableLoopSet loopset;
+    err = createSortableLoopSet(*arcset, &loopset);
+    if (err) {
+        destroyArcSet(arcset);
+        return err;
+    }
+
+    err = createMultiPolygon(loopset, out);
+    if (err) {
+        destroySortableLoopSet(&loopset);
+        destroyArcSet(arcset);
+        return err;
+    }
+
+    destroyArcSet(arcset);
+    destroySortableLoopSetShallow(&loopset);
+
+    return E_SUCCESS;
+}
+
+/**
  * Create a GeoMultiPolygon from a set of H3 cells.
  *
  * This function converts a set of H3 cells into a GeoMultiPolygon
@@ -619,47 +653,130 @@ H3Error H3_EXPORT(cellsToMultiPolygon)(const H3Index *cells,
         return E_SUCCESS;
     }
 
-    // arcset initializes with separate doubly-linked loops for each cell,
-    // each in their own connected component
     ArcSet arcset;
     err = createArcSet(cells, numCells, &arcset);
     if (err) return err;
 
-    // Cancel out pairs of edges, updating the doubly-linked loops and merging
-    // them into a single connected component
-    err = cancelArcPairs(arcset);
-    if (NEVER(err)) {
-        destroyArcSet(&arcset);
-        return err;
+    return arcSetToMultiPolygon(&arcset, out);
+}
+
+/**
+ * Count total Gosper boundary edges across a set of (possibly compacted)
+ * cells, each expanded to targetRes.
+ */
+static int64_t countGosperEdges(const H3Index *cells, int64_t numCells,
+                                int targetRes) {
+    int64_t total = 0;
+    for (int64_t i = 0; i < numCells; i++) {
+        int parentRes = H3_GET_RESOLUTION(cells[i]);
+        bool pent = H3_EXPORT(isPentagon)(cells[i]);
+        int faces = pent ? 5 : 6;
+        total += faces * _ipow(3, targetRes - parentRes);
+    }
+    return total;
+}
+
+/**
+ * Create an ArcSet from Gosper boundary edges of (possibly compacted) cells.
+ *
+ * For each cell, iterInitGosper yields edges in geometric (CCW) order around
+ * that cell's Gosper island at targetRes. Edges from different cells that
+ * share a boundary will be paired and canceled later by cancelArcPairs.
+ */
+static H3Error createArcSetGosper(const H3Index *cells, int64_t numCells,
+                                  int targetRes, ArcSet *arcset) {
+    int64_t numArcs = countGosperEdges(cells, numCells, targetRes);
+    int64_t numBuckets = numArcs * HASH_TABLE_MULTIPLIER;
+
+    arcset->numArcs = numArcs;
+    arcset->numBuckets = numBuckets;
+    arcset->arcs = H3_MEMORY(malloc)(numArcs * sizeof(Arc));
+    if (!arcset->arcs) {
+        return E_MEMORY_ALLOC;
     }
 
-    /*
-    Extract all loops and sort them by:
-      1) their connected component, and then by
-      2) the loop area.
-    This makes loops for each polygon contiguous in memory.
-    Within each polygon, the sorting makes the loop with the smallest enclosed
-    area come first (accounting for loop winding direction),
-    which is what we take to be the outer loop for that polygon.
-    */
-    SortableLoopSet loopset;
-    err = createSortableLoopSet(arcset, &loopset);
-    if (err) {
-        destroyArcSet(&arcset);
-        return err;
+    arcset->buckets = H3_MEMORY(calloc)(numBuckets, sizeof(Arc *));
+    if (!arcset->buckets) {
+        destroyArcSet(arcset);
+        return E_MEMORY_ALLOC;
     }
 
-    // Extract polygons, since loops are contiguous in SortableLoopSet memory.
-    // Polygons sorted by outer loop area, decreasing.
-    err = createMultiPolygon(loopset, out);
-    if (err) {
-        destroySortableLoopSet(&loopset);
-        destroyArcSet(&arcset);
-        return err;
+    // Fill arcs from Gosper boundary edges. Each cell's edges form a
+    // doubly-linked loop in their own connected component.
+    int64_t j = 0;
+    for (int64_t i = 0; i < numCells; i++) {
+        IterGosper iter = iterInitGosper(cells[i], targetRes);
+        int64_t loopStart = j;
+
+        while (iter.e) {
+            arcset->arcs[j].id = iter.e;
+            arcset->arcs[j].isRemoved = false;
+            arcset->arcs[j].isVisited = false;
+
+            // Union-find: all arcs in this cell's loop share first arc as root
+            arcset->arcs[j].parent = &arcset->arcs[loopStart];
+            arcset->arcs[j].rank = 1;
+
+            // Prev/next: iterator yields edges in CCW order, so link
+            // sequentially. We'll close the loop after the while loop.
+            if (j > loopStart) {
+                arcset->arcs[j].prev = &arcset->arcs[j - 1];
+                arcset->arcs[j - 1].next = &arcset->arcs[j];
+            }
+
+            j++;
+            iterStepGosper(&iter);
+        }
+
+        // Close the doubly-linked loop
+        if (j > loopStart) {
+            arcset->arcs[loopStart].prev = &arcset->arcs[j - 1];
+            arcset->arcs[j - 1].next = &arcset->arcs[loopStart];
+        }
     }
 
-    destroyArcSet(&arcset);
-    destroySortableLoopSetShallow(&loopset);
+    // Build hash table
+    for (int64_t i = 0; i < arcset->numArcs; i++) {
+        int64_t b = hashEdge(arcset->arcs[i].id, arcset->numBuckets);
+        while (arcset->buckets[b] != NULL) {
+            b = (b + 1) % arcset->numBuckets;
+        }
+        arcset->buckets[b] = &arcset->arcs[i];
+    }
 
     return E_SUCCESS;
+}
+
+/**
+ * Create a GeoMultiPolygon from a set of (possibly compacted) H3 cells.
+ *
+ * Each cell is expanded to targetRes using the Gosper iterator, which yields
+ * only boundary edges. Cross-cell shared edges are canceled via hash lookup.
+ * This is faster than the flat approach for compacted input because it avoids
+ * enumerating and canceling the vast majority of internal edges.
+ *
+ * @param cells Array of valid H3 cells (may be at mixed resolutions).
+ * @param numCells Number of cells.
+ * @param targetRes Resolution of the output edges. Must be >= resolution
+ *                  of every cell in the array.
+ * @param out Output GeoMultiPolygon. Caller frees with destroyGeoMultiPolygon.
+ * @return E_SUCCESS on success
+ */
+H3Error cellsToMultiPolygonGosper(const H3Index *cells, int64_t numCells,
+                                  int targetRes, GeoMultiPolygon *out) {
+    if (numCells == 0) {
+        out->numPolygons = 0;
+        out->polygons = NULL;
+        return E_SUCCESS;
+    }
+
+    H3Error err =
+        checkCellsToMultiPolyOverflow(numCells, HASH_TABLE_MULTIPLIER);
+    if (err) return err;
+
+    ArcSet arcset;
+    err = createArcSetGosper(cells, numCells, targetRes, &arcset);
+    if (err) return err;
+
+    return arcSetToMultiPolygon(&arcset, out);
 }

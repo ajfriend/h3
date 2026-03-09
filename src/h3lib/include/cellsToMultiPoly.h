@@ -220,4 +220,7 @@ static inline void destroySortablePolyVerts(SortablePoly *spolys,
     }
 }
 
+H3Error cellsToMultiPolygonGosper(const H3Index *cells, int64_t numCells,
+                                  int targetRes, GeoMultiPolygon *out);
+
 #endif
