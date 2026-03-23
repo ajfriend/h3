@@ -678,13 +678,17 @@ if(BUILD_BENCHMARKS)
                      src/apps/benchmarks/benchmarkGridPathCells.c)
     add_h3_benchmark(benchmarkDirectedEdge
                      src/apps/benchmarks/benchmarkDirectedEdge.c)
-    add_h3_benchmark(benchmarkGosperIter
-                     src/apps/benchmarks/benchmarkGosperIter.c)
+    if(ENABLE_REQUIRES_ALL_SYMBOLS)
+        add_h3_benchmark(benchmarkGosperIter
+                         src/apps/benchmarks/benchmarkGosperIter.c)
+    endif()
     add_h3_benchmark(benchmarkVertex src/apps/benchmarks/benchmarkVertex.c)
     add_h3_benchmark(benchmarkIsValidCell
                      src/apps/benchmarks/benchmarkIsValidCell.c)
-    add_h3_benchmark(benchmarkCellsToPolyAlgos
-                     src/apps/benchmarks/benchmarkCellsToPolyAlgos.c)
+    if(ENABLE_REQUIRES_ALL_SYMBOLS)
+        add_h3_benchmark(benchmarkCellsToPolyAlgos
+                         src/apps/benchmarks/benchmarkCellsToPolyAlgos.c)
+    endif()
     add_h3_benchmark(benchmarkCellToChildren
                      src/apps/benchmarks/benchmarkCellToChildren.c)
     add_h3_benchmark(benchmarkPolygonToCells
