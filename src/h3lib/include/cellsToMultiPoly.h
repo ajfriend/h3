@@ -220,4 +220,25 @@ static inline void destroySortablePolyVerts(SortablePoly *spolys,
     }
 }
 
+/**
+ * Create a GeoMultiPolygon from a set of (possibly compacted) H3 cells
+ * using the Gosper island boundary iterator. Much faster than the flat
+ * cellsToMultiPolygon when input has been run through compactCells first.
+ *
+ * Unlike cellsToMultiPolygon, this function does NOT validate, deduplicate,
+ * or compact the input. The caller must ensure cells are valid, non-
+ * overlapping, and at resolutions <= targetRes. For best performance,
+ * compact the input with compactCells before calling.
+ *
+ * @param cells Array of valid H3 cells (may be at mixed resolutions).
+ * @param numCells Number of cells.
+ * @param targetRes Resolution of the output polygon edges. Must be >=
+ *                  the resolution of every cell in the array.
+ * @param out Output GeoMultiPolygon. Caller frees with
+ *            destroyGeoMultiPolygon.
+ * @return E_SUCCESS on success
+ */
+H3Error cellsToMultiPolygonGosper(const H3Index *cells, int64_t numCells,
+                                  int targetRes, GeoMultiPolygon *out);
+
 #endif

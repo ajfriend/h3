@@ -156,6 +156,7 @@ set(LIB_SOURCE_FILES
     src/h3lib/include/polyfill.h
     src/h3lib/include/h3Index.h
     src/h3lib/include/directedEdge.h
+    src/h3lib/include/gosperIter.h
     src/h3lib/include/latLng.h
     src/h3lib/include/vec2d.h
     src/h3lib/include/vec3d.h
@@ -186,6 +187,7 @@ set(LIB_SOURCE_FILES
     src/h3lib/lib/localij.c
     src/h3lib/lib/latLng.c
     src/h3lib/lib/directedEdge.c
+    src/h3lib/lib/gosperIter.c
     src/h3lib/lib/mathExtensions.c
     src/h3lib/lib/iterators.c
     src/h3lib/lib/faceijk.c
@@ -282,6 +284,7 @@ set(OTHER_SOURCE_FILES
     src/apps/testapps/testH3IteratorsInternal.c
     src/apps/testapps/testMathExtensionsInternal.c
     src/apps/testapps/testDescribeH3Error.c
+    src/apps/testapps/testGosperIter.c
     src/apps/testapps/testGeoLoopArea.c
     src/apps/miscapps/cellToBoundaryHier.c
     src/apps/miscapps/cellToLatLngHier.c
@@ -321,6 +324,7 @@ set(OTHER_SOURCE_FILES
     src/apps/benchmarks/benchmarkGridDiskCells.c
     src/apps/benchmarks/benchmarkGridPathCells.c
     src/apps/benchmarks/benchmarkDirectedEdge.c
+    src/apps/benchmarks/benchmarkGosperIter.c
     src/apps/benchmarks/benchmarkVertex.c
     src/apps/benchmarks/benchmarkIsValidCell.c
     src/apps/benchmarks/benchmarkH3Api.c
@@ -670,11 +674,17 @@ if(BUILD_BENCHMARKS)
                      src/apps/benchmarks/benchmarkGridPathCells.c)
     add_h3_benchmark(benchmarkDirectedEdge
                      src/apps/benchmarks/benchmarkDirectedEdge.c)
+    if(ENABLE_REQUIRES_ALL_SYMBOLS)
+        add_h3_benchmark(benchmarkGosperIter
+                         src/apps/benchmarks/benchmarkGosperIter.c)
+    endif()
     add_h3_benchmark(benchmarkVertex src/apps/benchmarks/benchmarkVertex.c)
     add_h3_benchmark(benchmarkIsValidCell
                      src/apps/benchmarks/benchmarkIsValidCell.c)
-    add_h3_benchmark(benchmarkCellsToPolyAlgos
-                     src/apps/benchmarks/benchmarkCellsToPolyAlgos.c)
+    if(ENABLE_REQUIRES_ALL_SYMBOLS)
+        add_h3_benchmark(benchmarkCellsToPolyAlgos
+                         src/apps/benchmarks/benchmarkCellsToPolyAlgos.c)
+    endif()
     add_h3_benchmark(benchmarkCellToChildren
                      src/apps/benchmarks/benchmarkCellToChildren.c)
     add_h3_benchmark(benchmarkPolygonToCells
