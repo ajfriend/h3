@@ -29,6 +29,8 @@
 
 #ifdef _WIN32
 
+#define NOGDI
+#define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
 #define START_TIMER                   \

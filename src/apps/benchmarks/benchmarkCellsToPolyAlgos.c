@@ -20,6 +20,7 @@
 #include <stdlib.h>
 
 #include "benchmark.h"
+#include "cellsToMultiPoly.h"
 #include "h3api.h"
 
 #define BENCHMARK_LINKED(NAME, ITERS)                                       \
@@ -39,6 +40,76 @@
             H3_EXPORT(destroyGeoMultiPolygon)(&mpoly);               \
         });                                                          \
     } while (0)
+
+#define BENCHMARK_GOSPER(NAME, ITERS, RES)                           \
+    do {                                                             \
+        BENCHMARK(gosper_##NAME, ITERS, {                            \
+            GeoMultiPolygon mpoly;                                   \
+            cellsToMultiPolygonGosper(cells, numCells, RES, &mpoly); \
+            H3_EXPORT(destroyGeoMultiPolygon)(&mpoly);               \
+        });                                                          \
+    } while (0)
+
+#define BENCHMARK_GOSPER_COMPACT(NAME, ITERS, CELLS, N, RES)  \
+    do {                                                      \
+        BENCHMARK(gosper_compact_##NAME, ITERS, {             \
+            GeoMultiPolygon mpoly;                            \
+            cellsToMultiPolygonGosper(CELLS, N, RES, &mpoly); \
+            H3_EXPORT(destroyGeoMultiPolygon)(&mpoly);        \
+        });                                                   \
+    } while (0)
+
+// Helper: fill Colorado cells at a given resolution.
+// Caller must free *outCells.
+void coloradoCells(int res, H3Index **outCells, int64_t *outNumCells) {
+    LatLng verts[] = {
+        {37.0, -109.0},
+        {37.0, -102.0},
+        {41.0, -102.0},
+        {41.0, -109.0},
+    };
+    for (int i = 0; i < 4; i++) {
+        verts[i].lat = H3_EXPORT(degsToRads)(verts[i].lat);
+        verts[i].lng = H3_EXPORT(degsToRads)(verts[i].lng);
+    }
+    GeoPolygon polygon = {
+        .numHoles = 0,
+        .holes = NULL,
+        .geoloop = {.numVerts = 4, .verts = verts},
+    };
+
+    int64_t maxCells;
+    H3_EXPORT(maxPolygonToCellsSize)(&polygon, res, 0, &maxCells);
+
+    H3Index *cells = calloc(maxCells, sizeof(H3Index));
+    H3_EXPORT(polygonToCells)(&polygon, res, 0, cells);
+
+    int64_t numCells = 0;
+    for (int64_t i = 0; i < maxCells; i++) {
+        if (cells[i] != H3_NULL) {
+            cells[numCells++] = cells[i];
+        }
+    }
+    cells = realloc(cells, numCells * sizeof(H3Index));
+
+    *outCells = cells;
+    *outNumCells = numCells;
+}
+
+// Helper: compact a cell set. Caller must free *outCompacted.
+void compactAndCount(H3Index *cells, int64_t numCells, H3Index **outCompacted,
+                     int64_t *outNumCompacted) {
+    H3Index *compacted = calloc(numCells, sizeof(H3Index));
+    H3_EXPORT(compactCells)(cells, compacted, numCells);
+    int64_t numCompacted = 0;
+    for (int64_t i = 0; i < numCells; i++) {
+        if (compacted[i] != H3_NULL) {
+            compacted[numCompacted++] = compacted[i];
+        }
+    }
+    *outCompacted = compacted;
+    *outNumCompacted = numCompacted;
+}
 
 BEGIN_BENCHMARKS();
 
@@ -107,45 +178,54 @@ BEGIN_BENCHMARKS();
 }
 
 {
-    // Square approximating Colorado.
-    // (4 corners, counterclockwise from southwest)
     int res = 6;
-    LatLng verts[] = {
-        {37.0, -109.0},
-        {37.0, -102.0},
-        {41.0, -102.0},
-        {41.0, -109.0},
-    };
-
-    for (int i = 0; i < 4; i++) {
-        verts[i].lat = H3_EXPORT(degsToRads)(verts[i].lat);
-        verts[i].lng = H3_EXPORT(degsToRads)(verts[i].lng);
-    }
-
-    GeoPolygon polygon = {
-        .numHoles = 0,
-        .holes = NULL,
-        .geoloop = {.numVerts = 4, .verts = verts},
-    };
-
-    int64_t maxCells;
-    H3_EXPORT(maxPolygonToCellsSize)(&polygon, res, 0, &maxCells);
-
-    H3Index *cells = calloc(maxCells, sizeof(H3Index));
-    H3_EXPORT(polygonToCells)(&polygon, res, 0, cells);
-
-    // Move all valid cells to the front and resize
-    int64_t numCells = 0;
-    for (int64_t i = 0; i < maxCells; i++) {
-        if (cells[i] != H3_NULL) {
-            cells[numCells++] = cells[i];
-        }
-    }
-    cells = realloc(cells, numCells * sizeof(H3Index));
+    H3Index *cells;
+    int64_t numCells;
+    coloradoCells(res, &cells, &numCells);
 
     BENCHMARK_LINKED(colorado, 100);
     BENCHMARK_DIRECT(colorado, 100);
+    BENCHMARK_GOSPER(colorado, 100, res);
 
+    H3Index *compacted;
+    int64_t numCompacted;
+    compactAndCount(cells, numCells, &compacted, &numCompacted);
+    BENCHMARK_GOSPER_COMPACT(colorado, 100, compacted, numCompacted, res);
+    free(compacted);
+    free(cells);
+}
+
+{
+    int res = 7;
+    H3Index *cells;
+    int64_t numCells;
+    coloradoCells(res, &cells, &numCells);
+
+    BENCHMARK_DIRECT(colorado7, 10);
+    BENCHMARK_GOSPER(colorado7, 10, res);
+
+    H3Index *compacted;
+    int64_t numCompacted;
+    compactAndCount(cells, numCells, &compacted, &numCompacted);
+    BENCHMARK_GOSPER_COMPACT(colorado7, 10, compacted, numCompacted, res);
+    free(compacted);
+    free(cells);
+}
+
+{
+    int res = 8;
+    H3Index *cells;
+    int64_t numCells;
+    coloradoCells(res, &cells, &numCells);
+
+    BENCHMARK_DIRECT(colorado8, 1);
+    BENCHMARK_GOSPER(colorado8, 1, res);
+
+    H3Index *compacted;
+    int64_t numCompacted;
+    compactAndCount(cells, numCells, &compacted, &numCompacted);
+    BENCHMARK_GOSPER_COMPACT(colorado8, 1, compacted, numCompacted, res);
+    free(compacted);
     free(cells);
 }
 
